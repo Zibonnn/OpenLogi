@@ -20,6 +20,8 @@ use gpui::{
 use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode};
 use tracing::warn;
 
+use crate::app::AppView;
+
 /// One live handle per auxiliary window, stored as a GPUI global so the menu
 /// actions and footer links can find an already-open window and focus it.
 #[derive(Default)]
@@ -28,6 +30,8 @@ pub struct WindowRegistry {
     /// it back after the user closes it while the app keeps running in the
     /// background (mouse hook + watchers).
     pub main: Option<WindowHandle<Root>>,
+    /// Main window root view — used to switch sidebar navigation (e.g. ⌘,).
+    pub main_view: Option<gpui::Entity<AppView>>,
     pub settings: Option<WindowHandle<Root>>,
     pub about: Option<WindowHandle<Root>>,
     pub add_device: Option<WindowHandle<Root>>,

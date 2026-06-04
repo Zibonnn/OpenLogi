@@ -1,16 +1,20 @@
 use gpui::{
-    AnyElement, AppContext as _, BorrowAppContext as _, BoxShadow, Context, Div, Entity,
-    FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, div, img, point,
+    AnyElement, AppContext as _, BorrowAppContext as _, Context, Div, Entity, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, div, img,
     prelude::FluentBuilder as _, px, relative, rgb,
 };
 use gpui_component::{
-    Icon, IconName,
+    Collapsible, Icon, IconName,
+    button::{Button, ButtonVariants as _},
     description_list::{DescriptionItem, DescriptionList},
     h_flex,
     scroll::ScrollableElement as _,
+    select::SelectState,
+    sidebar::{
+        Sidebar, SidebarCollapsible, SidebarGroup, SidebarItem, SidebarMenu, SidebarMenuItem,
+    },
     tab::TabBar,
-    tooltip::Tooltip,
     v_flex,
 };
 use openlogi_core::config::Config;
@@ -26,27 +30,11 @@ use crate::components::carousel::Carousel;
 use crate::components::dpi_panel::DpiPanel;
 use crate::components::lighting_panel::LightingPanel;
 use crate::mouse_model::view::MouseModelView;
+use crate::nav::SidebarNav;
+use crate::settings_pages::{self, LanguageOption, embedded_settings_content, on_language_select};
 use crate::state::{AppState, DeviceRecord};
-use crate::theme::{self, FOOTER_H, HEADER_H, Palette};
-
-/// Which screen the root view is showing.
-///
-/// GPUI has no router, so navigation is a tiny view-local enum that selects
-/// which subtree [`AppView::render`] builds. It is deliberately *not* in
-/// [`AppState`]: the route is pure UI presentation, whereas
-/// [`AppState::current_device`] is functional (it drives the hook bindings,
-/// DPI, and persisted selection). The detail route is keyed by `config_key`
-/// rather than an index so a hot-plug that reorders or drops the device list
-/// can't silently swap the user onto a different device's settings — render
-/// validates the key against the live selection and pops back to [`Route::Home`]
-/// when it no longer matches.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Route {
-    /// The device gallery.
-    Home,
-    /// A single device's settings, identified by its stable config key.
-    Device { config_key: String },
-}
+use crate::theme::{self, FOOTER_H, Palette};
+use crate::windows::settings;
 
 /// The active section of the device-detail screen. Backs the detail `TabBar`;
 /// reset to the device's first tab whenever a device is opened.
@@ -64,8 +52,8 @@ enum DetailTab {
     Pointer,
     /// RGB lighting — color, brightness, on/off.
     Lighting,
-    /// Device info and configuration.
-    Device,
+    /// Device info and configuration (not named `Device` — collides with i18n).
+    Info,
 }
 
 impl DetailTab {
@@ -80,7 +68,7 @@ impl DetailTab {
         if supports_lighting(record) {
             tabs.push(Self::Lighting);
         }
-        tabs.push(Self::Device);
+        tabs.push(Self::Info);
         tabs
     }
 
@@ -89,7 +77,7 @@ impl DetailTab {
         Self::tabs_for(record)
             .first()
             .copied()
-            .unwrap_or(Self::Device)
+            .unwrap_or(Self::Info)
     }
 
     fn label(self) -> SharedString {
@@ -97,7 +85,7 @@ impl DetailTab {
             Self::Buttons => tr!("Buttons"),
             Self::Pointer => tr!("Pointer"),
             Self::Lighting => tr!("Lighting"),
-            Self::Device => tr!("Device"),
+            Self::Info => tr!("Info"),
         }
     }
 }
@@ -110,23 +98,17 @@ fn is_configurable_pointer(kind: DeviceKind) -> bool {
     matches!(kind, DeviceKind::Mouse | DeviceKind::Trackball)
 }
 
-/// Whether to offer the RGB lighting tab. A `Keyboard` is always a keyboard;
-/// wired G-series keyboards, though, enumerate as `Unknown` over the direct
-/// (USB) path (it carries no codename or kind), so a direct-attached `Unknown`
-/// counts too.
+/// Whether to offer the RGB lighting tab — keyboards with per-key RGB only.
 ///
-/// [`openlogi_hid::set_keyboard_color`] only drives the *wired* path today (it
-/// opens a raw USB writer), so a Bolt/Unifying-paired keyboard's writes no-op
-/// until a wireless lighting path lands — the tab still persists the config.
+/// Do not key off `Unknown` + direct USB/BT: most mice report that pairing and
+/// would incorrectly get a Lighting tab. Wired G-series boards that enumerate as
+/// `Unknown` are rare; they can be whitelisted by codename when needed.
 fn supports_lighting(record: &DeviceRecord) -> bool {
     matches!(record.kind, DeviceKind::Keyboard)
-        || (matches!(record.kind, DeviceKind::Unknown)
-            && matches!(record.route, Some(DeviceRoute::Direct { .. })))
 }
 
-/// Root application view.
+/// Root application view — System Settings layout: device sidebar + detail pane.
 pub struct AppView {
-    route: Route,
     mouse_model: Entity<MouseModelView>,
     dpi_panel: Entity<DpiPanel>,
     lighting_panel: Entity<LightingPanel>,
@@ -139,11 +121,23 @@ pub struct AppView {
     accessibility_dismissed: bool,
     /// Which section of the device-detail screen is showing.
     active_tab: DetailTab,
+    /// Main-window sidebar selection (device or a settings section).
+    nav: SidebarNav,
+    language_select: Entity<SelectState<Vec<LanguageOption>>>,
+    #[allow(
+        dead_code,
+        reason = "held to keep the language-select subscription alive"
+    )]
+    language_sub: Subscription,
 }
 
 impl AppView {
     /// Construct the root view and its child entities.
-    pub fn new(inventories: &[DeviceInventory], cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        inventories: &[DeviceInventory],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let config = match Config::load_or_default() {
             Ok(c) => c,
             Err(e) => {
@@ -176,9 +170,13 @@ impl AppView {
         let mouse_model = cx.new(MouseModelView::new);
         let dpi_panel = cx.new(DpiPanel::new);
         let lighting_panel = cx.new(LightingPanel::new);
+        let language_select = settings_pages::new_language_select(window, cx);
+        let language_sub =
+            cx.subscribe_in(&language_select, window, |_, select, event, window, cx| {
+                on_language_select(select, event, window, cx);
+            });
         let state_obs = cx.observe_global::<AppState>(|_, cx| cx.notify());
         Self {
-            route: Route::Home,
             mouse_model,
             dpi_panel,
             lighting_panel,
@@ -186,7 +184,23 @@ impl AppView {
             state_obs,
             accessibility_dismissed: false,
             active_tab: DetailTab::Buttons,
+            nav: SidebarNav::Devices,
+            language_select,
+            language_sub,
         }
+    }
+
+    /// Switch sidebar navigation (device detail or embedded settings).
+    pub fn set_nav(&mut self, nav: SidebarNav, cx: &mut Context<Self>) {
+        self.nav = nav;
+        if let SidebarNav::Device(idx) = nav {
+            cx.update_global::<AppState, _>(|state, _| state.set_current_device(idx));
+            self.active_tab = cx
+                .try_global::<AppState>()
+                .and_then(AppState::current_record)
+                .map_or(DetailTab::Info, DetailTab::default_for);
+        }
+        cx.notify();
     }
 
     /// Keep the OS-appearance observer alive.
@@ -194,35 +208,34 @@ impl AppView {
         self.appearance_obs = Some(sub);
     }
 
-    /// Drill into a device's settings from the gallery. Makes it the
-    /// functionally active device too (hook bindings, DPI, and the persisted
-    /// selection follow [`AppState::set_current_device`]) and switches the
-    /// route to its detail screen.
-    fn open_device(&mut self, config_key: String, cx: &mut Context<Self>) {
-        cx.update_global::<AppState, _>(|state, _| {
-            if let Some(idx) = state
-                .device_list
-                .iter()
-                .position(|r| r.config_key == config_key)
-            {
-                state.set_current_device(idx);
-            }
-        });
-        self.route = Route::Device { config_key };
-        // Land on the device's first relevant tab — Buttons for a mouse,
-        // Lighting for a wired keyboard, Device for everything else.
-        self.active_tab = cx
+    /// Drop `active_tab` when the current device no longer exposes that section.
+    fn reconcile_active_tab(&mut self, cx: &Context<Self>) {
+        if !matches!(self.nav, SidebarNav::Device(_)) {
+            return;
+        }
+        let Some(record) = cx
             .try_global::<AppState>()
             .and_then(AppState::current_record)
-            .map_or(DetailTab::Device, DetailTab::default_for);
-        cx.notify();
+        else {
+            return;
+        };
+        let tabs = DetailTab::tabs_for(record);
+        if !tabs.contains(&self.active_tab) {
+            self.active_tab = tabs.first().copied().unwrap_or(DetailTab::Info);
+        }
     }
 
-    /// Return to the device gallery. Leaves the active-device selection
-    /// untouched — the route is purely presentational.
-    fn go_home(&mut self, cx: &mut Context<Self>) {
-        self.route = Route::Home;
-        cx.notify();
+    fn reconcile_nav(&mut self, cx: &Context<Self>) {
+        if let SidebarNav::Device(idx) = self.nav {
+            let len = cx
+                .try_global::<AppState>()
+                .map_or(0, |s| s.device_list.len());
+            if len == 0 {
+                self.nav = SidebarNav::Devices;
+            } else if idx >= len {
+                self.nav = SidebarNav::Devices;
+            }
+        }
     }
 
     fn accessibility_gate(pal: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -319,48 +332,48 @@ impl Render for AppView {
             .try_global::<AppState>()
             .is_some_and(|s| !s.device_list.is_empty());
         let scanning = cx.try_global::<AppState>().is_some_and(|s| s.scanning);
-
-        // Resolve the route. A detail route lives only while its device is
-        // still the live selection; if a hot-plug dropped or reordered it (or
-        // the selection fell back to another device) pop quietly back to the
-        // gallery rather than render a different device under the same screen.
-        let show_device = match &self.route {
-            Route::Home => false,
-            Route::Device { config_key } => {
-                cx.try_global::<AppState>()
-                    .and_then(AppState::current_record)
-                    .map(|r| r.config_key.as_str())
-                    == Some(config_key.as_str())
-            }
-        };
-        if !show_device {
-            self.route = Route::Home;
+        self.reconcile_nav(cx);
+        if matches!(self.nav, SidebarNav::Device(_)) {
+            self.reconcile_active_tab(cx);
         }
 
-        window.set_window_title(&main_window_title(show_device, cx));
+        window.set_window_title(&main_window_title(self.nav, cx));
 
-        let (header_el, content_el) = if show_device {
-            (
-                detail_header(pal, cx).into_any_element(),
-                detail_content(
-                    &self.mouse_model,
-                    &self.dpi_panel,
-                    &self.lighting_panel,
-                    self.active_tab,
-                    pal,
-                    cx,
-                )
-                .into_any_element(),
-            )
+        let main_pane = if let Some(section) = self.nav.settings_section() {
+            embedded_settings_content(section, &self.language_select, pal, cx).into_any_element()
         } else {
-            (
-                home_header(pal).into_any_element(),
-                if has_device {
-                    device_gallery(cx).into_any_element()
-                } else {
+            match self.nav {
+                SidebarNav::Devices => {
+                    if has_device {
+                        device_gallery(cx).into_any_element()
+                    } else {
+                        device_empty_state(pal, scanning)
+                    }
+                }
+                SidebarNav::Device(_) => {
+                    if has_device
+                        && cx
+                            .try_global::<AppState>()
+                            .and_then(AppState::current_record)
+                            .is_some()
+                    {
+                        detail_shell(
+                            &self.mouse_model,
+                            &self.dpi_panel,
+                            &self.lighting_panel,
+                            self.active_tab,
+                            pal,
+                            cx,
+                        )
+                        .into_any_element()
+                    } else {
+                        device_empty_state(pal, scanning)
+                    }
+                }
+                SidebarNav::General | SidebarNav::Permissions | SidebarNav::Language => {
                     device_empty_state(pal, scanning)
-                },
-            )
+                }
+            }
         };
 
         v_flex()
@@ -369,116 +382,126 @@ impl Render for AppView {
             .text_color(pal.text_primary)
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Zoom, window, _| window.zoom_window())
-            .child(header_el)
-            .child(content_el)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .w_full()
+                    .min_h_0()
+                    .child(app_sidebar(self.nav, pal, cx))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .bg(pal.bg)
+                            .child(main_pane),
+                    ),
+            )
             .child(footer(pal, granted))
             .into_any_element()
     }
 }
 
-/// Home (gallery) top bar: the "Devices" title, a Settings gear, and the
-/// Add-Device button — the entry points the old carousel header used to carry.
-fn home_header(pal: Palette) -> impl IntoElement {
-    h_flex()
-        .h(px(HEADER_H))
-        .w_full()
-        .px_5()
-        .gap_3()
-        .items_center()
-        .border_b_1()
-        .border_color(pal.border)
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_lg()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(tr!("Devices")),
-        )
-        .child(settings_button(pal))
-        .child(add_device_button(pal))
+/// Top-level sidebar section — devices list or settings menu group.
+#[derive(Clone)]
+enum MainSidebarSection {
+    Menu(SidebarMenu),
+    Settings(SidebarGroup<SidebarMenu>),
 }
 
-/// Device-detail top bar: a back affordance returning to the gallery, the
-/// active device's name, its connection status, and the Add-Device button.
-fn detail_header(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
-    let record = cx
-        .try_global::<AppState>()
-        .and_then(AppState::current_record)
-        .cloned();
-    h_flex()
-        .h(px(HEADER_H))
-        .w_full()
-        .px_5()
-        .gap_3()
-        .items_center()
-        .border_b_1()
-        .border_color(pal.border)
-        .child(back_button(pal, cx))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_lg()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(
-                    record
-                        .as_ref()
-                        .map_or_else(|| tr!("Device").to_string(), |r| r.display_name.clone()),
-                ),
-        )
-        .when_some(record, |this, r| this.child(status_badge(r.online, pal)))
-        .child(add_device_button(pal))
+impl Collapsible for MainSidebarSection {
+    fn is_collapsed(&self) -> bool {
+        match self {
+            Self::Menu(menu) => menu.is_collapsed(),
+            Self::Settings(group) => group.is_collapsed(),
+        }
+    }
+
+    fn collapsed(self, collapsed: bool) -> Self {
+        match self {
+            Self::Menu(menu) => Self::Menu(menu.collapsed(collapsed)),
+            Self::Settings(group) => Self::Settings(group.collapsed(collapsed)),
+        }
+    }
 }
 
-/// "← Back" affordance on the detail screen; returns to the gallery without
-/// changing the active-device selection.
-fn back_button(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
-    h_flex()
-        .id("detail-back")
+impl SidebarItem for MainSidebarSection {
+    fn render(
+        self,
+        id: impl Into<gpui::ElementId>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> impl IntoElement {
+        match self {
+            Self::Menu(menu) => menu.render(id, window, cx).into_any_element(),
+            Self::Settings(group) => group.render(id, window, cx).into_any_element(),
+        }
+    }
+}
+
+/// macOS System Settings–style sidebar (gpui-component [`Sidebar`] + grouped menus).
+fn app_sidebar(nav: SidebarNav, _pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
+    let view = cx.entity();
+    let devices_view = view.clone();
+
+    let settings_menu = |section: SidebarNav, label: SharedString, icon: IconName| {
+        let active = nav == section;
+        let view = view.clone();
+        SidebarMenuItem::new(label)
+            .icon(icon)
+            .active(active)
+            .on_click(move |_, _, cx| {
+                view.update(cx, |this, cx| this.set_nav(section, cx));
+            })
+    };
+
+    Sidebar::new("main-sidebar")
+        .h_full()
         .flex_shrink_0()
-        .items_center()
-        .gap_1()
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .text_color(pal.text_muted)
-        .cursor_pointer()
-        .hover(|s| s.bg(pal.surface_hover).text_color(pal.text_primary))
-        .child(Icon::new(IconName::ChevronLeft).size_4())
-        .child(tr!("Back"))
-        .on_click(cx.listener(|this, _, _, cx| this.go_home(cx)))
+        .collapsible(SidebarCollapsible::None)
+        .footer(
+            Button::new("sidebar-add-device")
+                .ghost()
+                .icon(IconName::Plus)
+                .label(tr!("Add Device"))
+                .on_click(|_, _, cx| crate::windows::add_device::open(cx)),
+        )
+        .child(MainSidebarSection::Menu(
+            SidebarMenu::new().child(
+                SidebarMenuItem::new(tr!("Devices"))
+                    .icon(IconName::Cpu)
+                    .active(nav == SidebarNav::Devices)
+                    .on_click(move |_, _, cx| {
+                        devices_view.update(cx, |this, cx| this.set_nav(SidebarNav::Devices, cx));
+                    }),
+            ),
+        ))
+        .child(MainSidebarSection::Settings(
+            SidebarGroup::new(tr!("Settings")).child(
+                SidebarMenu::new()
+                    .child(settings_menu(
+                        SidebarNav::General,
+                        tr!("General"),
+                        IconName::Settings,
+                    ))
+                    .child(settings_menu(
+                        SidebarNav::Permissions,
+                        tr!("Permissions"),
+                        IconName::Info,
+                    ))
+                    .child(settings_menu(
+                        SidebarNav::Language,
+                        tr!("Language"),
+                        IconName::Globe,
+                    )),
+            ),
+        ))
 }
 
-/// Square Settings gear in the Home header: opens the Settings window.
-fn settings_button(pal: Palette) -> impl IntoElement {
-    h_flex()
-        .id("home-settings")
-        .flex_shrink_0()
-        .size(px(36.))
-        .items_center()
-        .justify_center()
-        .rounded_md()
-        .border_1()
-        .border_color(pal.border)
-        .bg(pal.surface)
-        .text_color(pal.text_muted)
-        .cursor_pointer()
-        .hover(|s| s.bg(pal.surface_hover).text_color(pal.text_primary))
-        .tooltip(|window, cx| Tooltip::new(tr!("Settings")).build(window, cx))
-        .child(Icon::new(IconName::Settings).size_4())
-        .on_click(|_, _, cx| crate::windows::settings::open(cx))
-}
-
-/// Horizontal gap between gallery cards, in pixels.
+/// Horizontal gap between preview cards, in pixels.
 const GALLERY_GAP: f32 = 24.;
 
-/// The Home device list: an equal-size, horizontally scrollable row of device
-/// cards (Logi Options+ style), via [`Carousel`]'s `uniform` mode. Each card
-/// floats the device photo on the window background above its name and battery;
-/// the row centres while the cards fit the viewport and scrolls once they don't.
-/// Clicking a card opens its detail screen and makes it the active device (whose
-/// bindings the hook uses); the active card wears a faint accent ring.
+/// Devices overview: original large image preview cards in the main pane.
 fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
     let (len, active_idx) = cx.try_global::<AppState>().map_or((0, 0), |s| {
         let len = s.device_list.len();
@@ -501,14 +524,13 @@ fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
                 else {
                     return div().into_any_element();
                 };
-                let key = record.config_key.clone();
                 let view = view.clone();
                 device_card(&record, focused, pal)
                     .id(("device-card", idx))
                     .cursor_pointer()
                     .hover(move |s| s.bg(pal.surface))
                     .on_click(move |_, _, cx| {
-                        view.update(cx, |this, cx| this.open_device(key.clone(), cx));
+                        view.update(cx, |this, cx| this.set_nav(SidebarNav::Device(idx), cx));
                     })
                     .into_any_element()
             })
@@ -519,12 +541,6 @@ fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
     )
 }
 
-/// A device card in the Home gallery: the device photo floating on the window
-/// background above the name, connectivity dot, kind/slot, and battery. Fixed
-/// width so cards stay equal in the scrollable row. The active device wears a
-/// faint accent ring; inactive cards reserve the same 1px border in a
-/// transparent colour so selection never nudges the layout. Returns a bare
-/// [`Div`] so the gallery can wire the click handler.
 fn device_card(record: &DeviceRecord, active: bool, pal: Palette) -> Div {
     let ring = if active {
         rgb(theme::ACCENT_BLUE).into()
@@ -594,14 +610,7 @@ fn device_card(record: &DeviceRecord, active: bool, pal: Palette) -> Div {
         )
 }
 
-/// The device photo, scaled to fit its container (object-fit contain), or a
-/// neutral placeholder when the depot ships no front render.
-///
-/// Sized with `max_*` rather than `size_full` so the image is bounded by the
-/// container but keeps its intrinsic aspect: `size_full` makes gpui's `img`
-/// fall back to the raw pixel dimensions when the box can't fully constrain it,
-/// which (with an `overflow_hidden` parent) cropped the device into a zoomed
-/// close-up. `object_fit` defaults to `Contain`, so the whole device shows.
+/// The device photo, scaled to fit its preview card, or a neutral placeholder.
 fn device_image(record: &DeviceRecord, pal: Palette) -> AnyElement {
     match record
         .asset
@@ -619,34 +628,25 @@ fn device_image(record: &DeviceRecord, pal: Palette) -> AnyElement {
     }
 }
 
-/// Connectivity dot for a gallery card: a steady grey when offline, a green dot
-/// with a static glow when connected. The glow is a fixed `BoxShadow`, not a
-/// `.repeat()` animation: an infinite animation keeps GPUI re-rendering every
-/// frame for as long as a device is connected, pinning the render loop and
-/// burning CPU/battery while the app is idle.
+/// Connectivity dot for a device preview card (steady; no animated glow).
 fn status_dot(online: bool) -> AnyElement {
     let color = if online {
         theme::STATUS_CONNECTED
     } else {
         theme::STATUS_OFFLINE
     };
-    let base = div().size(px(10.)).rounded_full().bg(rgb(color));
-    if !online {
-        return base.into_any_element();
-    }
-    base.shadow(vec![BoxShadow {
-        color: gpui::hsla(0.35, 0.7, 0.55, 0.6),
-        offset: point(px(0.), px(0.)),
-        blur_radius: px(6.),
-        spread_radius: px(0.5),
-    }])
-    .into_any_element()
+    div()
+        .flex_shrink_0()
+        .size(px(8.))
+        .rounded_full()
+        .bg(rgb(color))
+        .into_any_element()
 }
 
-/// Battery readout for a gallery card: a charge/level glyph plus the
-/// percentage, in the muted metadata style.
+/// Battery readout beside the device subtitle.
 fn battery_view(b: &BatteryInfo, pal: Palette) -> AnyElement {
     h_flex()
+        .flex_shrink_0()
         .gap_1()
         .items_center()
         .text_xs()
@@ -656,8 +656,7 @@ fn battery_view(b: &BatteryInfo, pal: Palette) -> AnyElement {
         .into_any_element()
 }
 
-/// Pick the battery glyph from charge state first (charging / full / error),
-/// then fall back to the discrete charge level for a plain discharge.
+/// Pick the battery glyph from charge state first, then discrete level.
 fn battery_icon(b: &BatteryInfo) -> IconName {
     match b.status {
         BatteryStatus::Charging | BatteryStatus::ChargingSlow => IconName::BatteryCharging,
@@ -673,37 +672,79 @@ fn battery_icon(b: &BatteryInfo) -> IconName {
     }
 }
 
-/// Trailing "+" button that opens the pairing window. Present in both screen
-/// headers; the empty state carries its own primary "Add Device" CTA, so this
-/// never floats alone in an empty header.
-fn add_device_button(pal: Palette) -> impl IntoElement {
-    h_flex()
-        .id("header-add-device")
-        .flex_shrink_0()
-        .size(px(36.))
-        .items_center()
-        .justify_center()
-        .rounded_md()
-        .border_1()
-        .border_color(pal.border)
-        .bg(pal.surface)
-        .text_color(pal.text_muted)
-        .cursor_pointer()
-        .hover(|s| s.bg(pal.surface_hover).text_color(pal.text_primary))
-        .tooltip(|window, cx| Tooltip::new(tr!("Add Device")).build(window, cx))
-        .child(Icon::new(IconName::Plus).size_4())
-        .on_click(|_, _, cx| crate::windows::add_device::open(cx))
+/// Detail pane: large title + tabbed sections for the selected device.
+fn detail_shell(
+    mouse_model: &Entity<MouseModelView>,
+    dpi_panel: &Entity<DpiPanel>,
+    lighting_panel: &Entity<LightingPanel>,
+    active: DetailTab,
+    pal: Palette,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    v_flex()
+        .flex_1()
+        .w_full()
+        .min_h_0()
+        .child(detail_title_bar(pal, cx))
+        .child(detail_content(
+            mouse_model,
+            dpi_panel,
+            lighting_panel,
+            active,
+            pal,
+            cx,
+        ))
 }
 
-fn main_window_title(show_device: bool, cx: &Context<AppView>) -> SharedString {
-    if !show_device {
+/// Content-area header (macOS Settings large title + status).
+fn detail_title_bar(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
+    let record = cx
+        .try_global::<AppState>()
+        .and_then(AppState::current_record)
+        .cloned();
+    h_flex()
+        .w_full()
+        .px_6()
+        .pt_5()
+        .pb_2()
+        .gap_3()
+        .items_end()
+        .border_b_1()
+        .border_color(pal.border)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xl()
+                .font_weight(FontWeight::BOLD)
+                .child(
+                    record
+                        .as_ref()
+                        .map_or_else(|| tr!("Device").to_string(), |r| r.display_name.clone()),
+                ),
+        )
+        .when_some(record, |this, r| this.child(status_badge(r.online, pal)))
+}
+
+/// Pick the battery glyph from charge state first (charging / full / error),
+/// then fall back to the discrete charge level for a plain discharge.
+fn main_window_title(nav: SidebarNav, cx: &Context<AppView>) -> SharedString {
+    if matches!(nav, SidebarNav::Devices) {
         return SharedString::from("OpenLogi");
+    }
+    if let Some(section) = nav.settings_section() {
+        let title = match section {
+            settings_pages::SettingsSection::General => tr!("General"),
+            settings_pages::SettingsSection::Permissions => tr!("Permissions"),
+            settings_pages::SettingsSection::Language => tr!("Language"),
+        };
+        return SharedString::from(format!("OpenLogi — {}", title));
     }
     cx.try_global::<AppState>()
         .and_then(AppState::current_record)
         .map_or_else(
             || SharedString::from("OpenLogi"),
-            |record| SharedString::from(format!("OpenLogi - {}", record.display_name)),
+            |record| SharedString::from(format!("OpenLogi — {}", record.display_name)),
         )
 }
 
@@ -721,26 +762,31 @@ fn detail_content(
     let tabs = cx
         .try_global::<AppState>()
         .and_then(AppState::current_record)
-        .map_or_else(|| vec![DetailTab::Device], DetailTab::tabs_for);
-    // The stored tab may not belong to this device — e.g. it lingered across a
-    // hot-plug onto a different kind. Fall back to the device's first tab.
+        .map_or_else(|| vec![DetailTab::Info], DetailTab::tabs_for);
     let active = if tabs.contains(&active) {
         active
     } else {
-        tabs.first().copied().unwrap_or(DetailTab::Device)
+        tabs.first().copied().unwrap_or(DetailTab::Info)
     };
     let content = match active {
         DetailTab::Buttons => buttons_tab(mouse_model).into_any_element(),
         DetailTab::Pointer => pointer_tab(dpi_panel, pal).into_any_element(),
         DetailTab::Lighting => lighting_tab(lighting_panel, pal).into_any_element(),
-        DetailTab::Device => device_tab(pal, cx).into_any_element(),
+        DetailTab::Info => device_tab(pal, cx).into_any_element(),
     };
     v_flex()
         .flex_1()
         .w_full()
         .min_h_0()
         .child(detail_tab_bar(&tabs, active, cx))
-        .child(content)
+        .child(
+            div()
+                .flex_1()
+                .w_full()
+                .min_h_0()
+                .overflow_hidden()
+                .child(content),
+        )
 }
 
 /// The detail screen's tab bar, built from the active device's tab set. Clicking
@@ -761,7 +807,7 @@ fn detail_tab_bar(
             .selected_index(active_ix)
             .children(tabs.iter().map(|t| t.label()))
             .on_click(cx.listener(move |this, ix: &usize, _, cx| {
-                this.active_tab = order.get(*ix).copied().unwrap_or(DetailTab::Device);
+                this.active_tab = order.get(*ix).copied().unwrap_or(DetailTab::Info);
                 cx.notify();
             })),
     )
@@ -820,22 +866,23 @@ fn lighting_tab(lighting_panel: &Entity<LightingPanel>, pal: Palette) -> impl In
         )))
 }
 
-/// Device tab: device details and configuration cards stacked.
+/// Info tab: device details and configuration cards stacked.
 fn device_tab(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
     v_flex()
         .flex_1()
         .w_full()
         .min_h_0()
-        .items_center()
         .overflow_y_scrollbar()
         .p_6()
         .child(
-            v_flex()
-                .w_full()
-                .max_w(px(560.))
-                .gap_3()
-                .child(device_details_card(pal, cx))
-                .child(configuration_card(pal, cx)),
+            h_flex().w_full().justify_center().child(
+                v_flex()
+                    .w_full()
+                    .max_w(px(560.))
+                    .gap_3()
+                    .child(device_details_card(pal, cx))
+                    .child(configuration_card(pal, cx)),
+            ),
         )
 }
 
@@ -912,7 +959,7 @@ fn configuration_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoEleme
                     IconName::Settings,
                     tr!("Settings"),
                     pal,
-                    |_event, _window, cx| crate::windows::settings::open(cx),
+                    |_event, _window, cx| settings::open_section(SidebarNav::General, cx),
                 ))
                 .child(sidebar_action(
                     "right-panel-config-folder",
@@ -959,7 +1006,7 @@ fn device_description_list(record: crate::state::DeviceRecord) -> impl IntoEleme
     let mut items = vec![
         DescriptionItem::new(tr!("Connection")).value(route_label(record.route.as_ref())),
         DescriptionItem::new(tr!("Slot")).value(record.slot.to_string()),
-        DescriptionItem::new(tr!("Device key")).value(record.config_key),
+        DescriptionItem::new(tr!("Device key")).value(record.config_key.clone()),
     ];
     if let Some(serial) = record.serial_number {
         items.push(DescriptionItem::new(tr!("Serial")).value(serial));
@@ -1169,23 +1216,9 @@ fn device_empty_state(pal: Palette, scanning: bool) -> AnyElement {
                 )),
         )
         .child(
-            div()
-                .id("empty-add-device")
-                .mt_1()
-                .px_4()
-                .py_1()
-                .rounded_md()
-                .bg(rgb(theme::ACCENT_BLUE))
-                .text_color(rgb(0x00ff_ffff))
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(Icon::new(IconName::Plus))
-                        .child(tr!("Add Device")),
-                )
+            Button::new("empty-add-device")
+                .primary()
+                .label(tr!("Add Device"))
                 .on_click(|_, _, cx| crate::windows::add_device::open(cx)),
         )
         .child(div().mt_1().max_w(px(440.)).text_xs().text_center().text_color(pal.text_muted).child(tr!(
@@ -1194,12 +1227,9 @@ fn device_empty_state(pal: Palette, scanning: bool) -> AnyElement {
         .into_any_element()
 }
 
-/// Footer status bar: passive state only. Left — the Accessibility-permission
-/// indicator; right — the app version. The former actions (Add Device /
-/// Settings / About) moved to where they belong: Add Device to the device
-/// header's "+", Settings to the right panel's Configuration card and the menu
-/// bar (⌘,), About to the menu bar. Keeping operations out of here leaves a
-/// genuine status bar — two quiet readouts at the edges, nothing in the middle.
+/// Footer status bar: passive state only. Left — Accessibility permission;
+/// right — app version. Add Device and Settings live in the sidebar toolbar
+/// (and the menu bar); About stays in the app menu.
 fn footer(pal: Palette, granted: bool) -> impl IntoElement {
     h_flex()
         .h(px(FOOTER_H))

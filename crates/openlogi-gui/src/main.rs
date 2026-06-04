@@ -32,7 +32,9 @@ mod hardware;
 mod hook_runtime;
 mod i18n;
 mod mouse_model;
+mod nav;
 mod platform;
+mod settings_pages;
 mod state;
 mod theme;
 mod watchers;
@@ -346,7 +348,7 @@ fn main_window_options(cx: &mut gpui::App) -> WindowOptions {
     let bounds = Bounds::centered(None, Size::new(px(1100.), px(750.)), cx);
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(Size::new(px(720.), px(520.))),
+        window_min_size: Some(Size::new(px(880.), px(520.))),
         titlebar: Some(TitlebarOptions {
             title: Some(SharedString::from("OpenLogi")),
             appears_transparent: false,
@@ -378,12 +380,14 @@ fn open_main_window(inventories: &[DeviceInventory], cx: &mut gpui::App) {
     let opened = cx.open_window(options, |window, cx| {
         Theme::change(ThemeMode::from(window.appearance()), Some(window), cx);
 
-        let view = cx.new(|cx| AppView::new(inventories, cx));
+        let view = cx.new(|cx| AppView::new(inventories, window, cx));
 
         let appearance_obs = window.observe_window_appearance(|window, cx| {
             Theme::change(ThemeMode::from(window.appearance()), Some(window), cx);
         });
         view.update(cx, |v, _| v.set_appearance_obs(appearance_obs));
+
+        cx.default_global::<windows::WindowRegistry>().main_view = Some(view.clone());
 
         cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
     });
