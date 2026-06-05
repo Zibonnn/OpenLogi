@@ -83,7 +83,7 @@ impl Render for SettingsView {
 
         gpui::div()
             .size_full()
-            .bg(pal.bg)
+            .bg(pal.window_bg)
             .text_color(pal.text_primary)
             .child(
                 Settings::new("settings-window")

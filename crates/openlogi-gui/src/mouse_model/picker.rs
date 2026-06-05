@@ -22,12 +22,15 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, BorrowAppContext as _, Context, Entity, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, StatefulInteractiveElement as _, Styled, Window, div, hsla,
-    prelude::FluentBuilder as _, px, rgb,
+    AnyElement, App, AppContext as _, BorrowAppContext as _, Context, Entity, Focusable as _,
+    FontWeight, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, div, hsla,
+    point, prelude::FluentBuilder as _, px, rgb,
 };
 use gpui_component::{
+    Icon, IconName, Sizable as _,
     h_flex,
+    input::{Input, InputState},
     menu::{PopupMenu, PopupMenuItem},
     popover::PopoverState,
     v_flex,
@@ -39,14 +42,121 @@ use crate::data::mouse_buttons::{
 use crate::state::AppState;
 use crate::theme::{self, ACCENT_BLUE, Palette};
 
-/// Floor width for the [`action_picker`] popover. The action labels drive the
-/// actual width; this only stops the list from collapsing too narrow. Matches
-/// gpui-component's own `PopupMenu` floor (`min_w(rems(8.))`).
-const POPOVER_W: f32 = 128.;
+/// Width of the action picker popover.
+const POPOVER_W: f32 = 288.;
 
-/// Cap the scrollable action list height. The catalog has 29+ entries across
-/// half a dozen categories; without a cap the list overflows the window.
-const POPOVER_LIST_MAX_H: f32 = 360.;
+/// Cap the scrollable action list height.
+const POPOVER_LIST_MAX_H: f32 = 340.;
+
+/// Commit callback invoked when a row is clicked.
+type PickFn = Rc<dyn Fn(Action, &mut Window, &mut App)>;
+
+// ── Stateful picker view ────────────────────────────────────────────────────
+
+struct ActionPickerView {
+    btn: ButtonId,
+    current: Option<Action>,
+    on_pick: PickFn,
+    search: Entity<InputState>,
+    scroll: ScrollHandle,
+    last_query: String,
+    #[allow(dead_code, reason = "held to keep the InputState observation alive")]
+    search_sub: Subscription,
+    focused: bool,
+}
+
+impl ActionPickerView {
+    fn new(
+        btn: ButtonId,
+        current: Option<Action>,
+        on_pick: PickFn,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr!("Search actions…")));
+        let search_sub = cx.observe(&search, |_, _entity, cx| cx.notify());
+        Self {
+            btn,
+            current,
+            on_pick,
+            search,
+            search_sub,
+            scroll: ScrollHandle::new(),
+            last_query: String::new(),
+            focused: false,
+        }
+    }
+}
+
+impl Render for ActionPickerView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Auto-focus the search input on first render so typing works immediately.
+        if !self.focused {
+            self.focused = true;
+            self.search.read(cx).focus_handle(cx).focus(window, cx);
+        }
+
+        let pal = theme::palette(cx);
+        let query_raw = self.search.read(cx).value();
+        let query = query_raw.trim().to_lowercase();
+
+        // Reset scroll to top when the search query changes.
+        if query != self.last_query {
+            self.last_query = query.clone();
+            self.scroll.set_offset(point(px(0.), px(0.)));
+        }
+
+        let button_name = rust_i18n::t!(self.btn.label());
+
+        let rows = filtered_action_rows(
+            "action-item",
+            &query,
+            self.current.as_ref(),
+            &self.on_pick,
+            pal,
+        );
+
+        let list_content: AnyElement = if rows.is_empty() {
+            div()
+                .px_3()
+                .py_4()
+                .text_sm()
+                .text_color(pal.text_muted)
+                .child(tr!("No results"))
+                .into_any_element()
+        } else {
+            div().children(rows).into_any_element()
+        };
+
+        v_flex()
+            .w(px(POPOVER_W))
+            .gap_1()
+            .child(picker_title(tr!("Bind %{name}", name => button_name), pal))
+            .child(search_bar(&self.search, pal))
+            .child(divider(pal))
+            .child(
+                div()
+                    .id("picker-scroll")
+                    .max_h(px(POPOVER_LIST_MAX_H))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(list_content),
+            )
+    }
+}
+
+// ── Cached picker state ─────────────────────────────────────────────────────
+
+/// Holds the `ActionPickerView` entity across re-renders of the popover content
+/// closure. Without this cache, every render would construct a fresh `InputState`
+/// (losing typed text) and a fresh `ScrollHandle` (losing scroll position).
+/// Mirrors the pattern used by `GestureMenuState` for the gesture menu.
+struct PickerCache {
+    view: Entity<ActionPickerView>,
+}
+
+// ── Public entry points ─────────────────────────────────────────────────────
 
 /// Build the popover body that re-binds a single `btn`.
 ///
@@ -56,6 +166,7 @@ const POPOVER_LIST_MAX_H: f32 = 360.;
 pub fn action_picker<T: 'static>(
     btn: ButtonId,
     observer: &Entity<T>,
+    window: &mut Window,
     cx: &mut Context<PopoverState>,
 ) -> AnyElement {
     let current = cx
@@ -63,40 +174,37 @@ pub fn action_picker<T: 'static>(
         .and_then(|s| s.button_bindings.get(&btn).cloned());
 
     let observer = observer.clone();
-    let popover = cx.entity().downgrade();
-    let on_pick: PickFn = Rc::new(move |action, window, cx| {
-        cx.update_global::<AppState, _>(|state, _| state.commit_binding(btn, action));
-        observer.update(cx, |_, cx| cx.notify());
-        if let Some(p) = popover.upgrade() {
-            p.update(cx, |s, cx| s.dismiss(window, cx));
+    let popover_weak = cx.entity().downgrade();
+
+    // Cache the view entity across re-renders so InputState and ScrollHandle
+    // survive — see PickerCache doc comment.
+    let cache = window.use_keyed_state("picker-view", cx, {
+        let observer = observer.clone();
+        let popover_weak = popover_weak.clone();
+        move |window, cx| {
+            let on_pick: PickFn = Rc::new(move |action, window, cx| {
+                cx.update_global::<AppState, _>(|state, _| state.commit_binding(btn, action));
+                observer.update(cx, |_, cx| cx.notify());
+                if let Some(p) = popover_weak.upgrade() {
+                    p.update(cx, |s, cx| s.dismiss(window, cx));
+                }
+            });
+            let view =
+                cx.new(|cx| ActionPickerView::new(btn, current, on_pick, window, cx));
+            PickerCache { view }
         }
     });
 
-    let pal = theme::palette(cx);
-    let button = rust_i18n::t!(btn.label());
-    v_flex()
-        .min_w(px(POPOVER_W))
-        .child(title(tr!("Bind %{name}", name => button), pal))
-        .child(divider(pal))
-        .child(scroll_list(
-            "picker-scroll",
-            action_rows("action-item", current.as_ref(), &on_pick, pal),
-        ))
-        .into_any_element()
+    cache.read(cx).view.clone().into_any_element()
 }
 
-/// Build the gesture button's two-level [`PopupMenu`]: one submenu per
-/// [`GestureDirection`], each opening the full action catalog with the current
-/// binding checked. Picking an action commits it to [`AppState`] and dismisses
-/// the whole menu.
+/// Build the gesture button's two-level [`PopupMenu`].
 pub fn build_gesture_menu(
     mut menu: PopupMenu,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     for dir in GestureDirection::ALL {
-        // Glyph prefix gives the directional cue the old list had; the bound
-        // action shows up as the checked row inside each submenu.
         let label = format!("{}  {}", dir.glyph(), tr!(dir.label()));
         menu = menu.submenu(label, window, cx, move |submenu, _window, cx| {
             gesture_action_submenu(dir, submenu, cx)
@@ -105,10 +213,8 @@ pub fn build_gesture_menu(
     menu
 }
 
-/// Populate one direction's action submenu: the category-grouped catalog with
-/// the current binding checked and a commit-on-click handler per row. The
-/// submenu scrolls (the catalog is taller than the window) — it has no further
-/// submenus of its own, so scrolling is allowed.
+// ── Private helpers ─────────────────────────────────────────────────────────
+
 fn gesture_action_submenu(
     direction: GestureDirection,
     submenu: PopupMenu,
@@ -139,15 +245,7 @@ fn gesture_action_submenu(
     submenu
 }
 
-// ── Shared building blocks ──────────────────────────────────────────────────
-
-/// Commit callback invoked when a row is clicked. Boxed so the row builder can
-/// be shared between the button picker and any future custom picker, which
-/// differ only in what they do after committing.
-type PickFn = Rc<dyn Fn(Action, &mut Window, &mut App)>;
-
-/// The action catalog grouped by [`Category`], preserving catalog order within
-/// each group and first-seen order across groups.
+/// The action catalog grouped by [`Category`], preserving catalog order.
 fn grouped_catalog() -> Vec<(Category, Vec<Action>)> {
     let mut sections: Vec<(Category, Vec<Action>)> = Vec::new();
     for action in Action::catalog() {
@@ -161,21 +259,53 @@ fn grouped_catalog() -> Vec<(Category, Vec<Action>)> {
     sections
 }
 
-/// Build the category-grouped action rows. `current` is marked with accent
-/// text + a check glyph; clicking any row invokes `on_pick`. `id_prefix`
-/// disambiguates element IDs between pickers that share this builder.
-fn action_rows(
+/// Map each category to a representative icon.
+fn category_icon(cat: Category) -> IconName {
+    match cat {
+        Category::Editing    => IconName::Replace,
+        Category::Browser    => IconName::Globe,
+        Category::Media      => IconName::Play,
+        Category::Mouse      => IconName::ChevronsUpDown,
+        Category::Dpi        => IconName::SortAscending,
+        Category::Scroll     => IconName::ArrowDown,
+        Category::Navigation => IconName::LayoutDashboard,
+        Category::System     => IconName::SquareTerminal,
+    }
+}
+
+/// Category-grouped, optionally filtered action rows.
+fn filtered_action_rows(
     id_prefix: &'static str,
+    query: &str,
     current: Option<&Action>,
     on_pick: &PickFn,
     pal: Palette,
 ) -> Vec<AnyElement> {
     let mut idx = 0usize;
     let mut children: Vec<AnyElement> = Vec::new();
+    let is_first_ref = &mut true;
+
     for (category, actions) in grouped_catalog() {
-        let category_label = rust_i18n::t!(category.label());
-        children.push(section_header(&category_label, pal));
-        for action in actions {
+        let matching: Vec<Action> = actions
+            .into_iter()
+            .filter(|action| {
+                if query.is_empty() {
+                    return true;
+                }
+                let label = rust_i18n::t!(action.label()).to_lowercase();
+                let cat_label = rust_i18n::t!(category.label()).to_lowercase();
+                label.contains(query) || cat_label.contains(query)
+            })
+            .collect();
+
+        if matching.is_empty() {
+            continue;
+        }
+
+        children.push(section_header(category, *is_first_ref, pal));
+        *is_first_ref = false;
+
+        for action in matching {
             let selected = current == Some(&action);
             let label = tr!(action.label());
             let on_pick = on_pick.clone();
@@ -188,10 +318,14 @@ fn action_rows(
                     } else {
                         pal.text_primary
                     })
-                    .when(selected, |s| s.bg(hsla(0.6, 0.9, 0.6, 0.14)))
-                    .child(div().child(label))
+                    .when(selected, |s| s.bg(hsla(0.6, 0.9, 0.6, 0.12)))
+                    .child(div().flex_1().text_sm().child(label))
                     .when(selected, |s| {
-                        s.child(div().text_color(rgb(ACCENT_BLUE)).child("✓"))
+                        s.child(
+                            Icon::new(IconName::Check)
+                                .size_3()
+                                .text_color(rgb(ACCENT_BLUE)),
+                        )
                     })
                     .on_click(move |_event, window, cx| (on_pick)(action.clone(), window, cx))
                     .into_any_element(),
@@ -201,9 +335,7 @@ fn action_rows(
     children
 }
 
-/// A clickable, full-width menu row: transparent at rest, hover-filled,
-/// `text-sm`, with its children spread left/right. Children are added by the
-/// caller.
+/// A clickable, full-width menu row — indented under its category header.
 fn menu_row(id: impl Into<gpui::ElementId>, pal: Palette) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(id)
@@ -211,48 +343,74 @@ fn menu_row(id: impl Into<gpui::ElementId>, pal: Palette) -> gpui::Stateful<gpui
         .items_center()
         .justify_between()
         .gap_2()
-        .px_2()
+        .pl_6()
+        .pr_3()
         .py_1p5()
         .rounded_md()
-        .text_sm()
         .hover(move |s| s.bg(pal.surface_hover))
 }
 
-/// Small uppercase muted group header.
-fn section_header(label: &str, pal: Palette) -> AnyElement {
-    div()
+/// Section header with category icon and label.
+fn section_header(category: Category, is_first: bool, pal: Palette) -> AnyElement {
+    h_flex()
         .w_full()
-        .px_2()
+        .px_3()
+        .when(!is_first, |s| s.mt_2())
         .pt_2()
-        .pb_0p5()
+        .pb_1()
+        .gap_1p5()
+        .items_center()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(pal.text_muted)
-        .child(label.to_uppercase())
+        .child(
+            Icon::new(category_icon(category))
+                .size_3()
+                .text_color(pal.text_muted),
+        )
+        .child(div().child(tr!(category.label())))
         .into_any_element()
 }
 
-/// Popover title — the binding context, e.g. "Bind Back".
-fn title(text: impl Into<gpui::SharedString>, pal: Palette) -> impl IntoElement {
+/// Search field styled as a native macOS search bar — subtle filled background,
+/// no hard border, `appearance(false)` lets our wrapper own the visual chrome.
+fn search_bar(state: &Entity<InputState>, pal: Palette) -> impl IntoElement {
+    let is_light = pal.card_bg.l > 0.5;
+    let search_bg = if is_light {
+        hsla(0., 0., 0., 0.07)
+    } else {
+        hsla(0., 0., 1., 0.10)
+    };
     div()
-        .px_2()
-        .pb_1()
+        .mx_2()
+        .my_0p5()
+        .rounded_md()
+        .bg(search_bg)
+        .child(
+            Input::new(state)
+                .small()
+                .appearance(false)
+                .prefix(
+                    Icon::new(IconName::Search)
+                        .size_3()
+                        .text_color(pal.text_muted)
+                        .into_any_element(),
+                ),
+        )
+}
+
+/// Popover title line — "Bind Back", etc.
+fn picker_title(text: impl Into<gpui::SharedString>, pal: Palette) -> impl IntoElement {
+    div()
+        .px_3()
+        .pt_1()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(pal.text_muted)
         .child(text.into())
 }
 
-/// 1px hairline separating the title from the list.
+/// 1px hairline separating title/search from the list.
 fn divider(pal: Palette) -> impl IntoElement {
-    div().mb_1().h(px(1.)).w_full().bg(pal.border)
-}
-
-/// Wrap `rows` in the height-capped, vertically scrollable list region.
-fn scroll_list(id: &'static str, rows: Vec<AnyElement>) -> impl IntoElement {
-    div()
-        .id(id)
-        .max_h(px(POPOVER_LIST_MAX_H))
-        .overflow_y_scroll()
-        .children(rows)
+    div().h(px(1.)).w_full().bg(pal.border)
 }

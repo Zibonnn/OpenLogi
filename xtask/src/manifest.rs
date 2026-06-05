@@ -74,7 +74,8 @@ pub(crate) fn generate_updater_manifest(args: &GenerateUpdaterManifest) -> Resul
         channel: CHANNEL,
         published_at: published_at()?,
         release_url: format!(
-            "https://github.com/AprilNEA/OpenLogi/releases/tag/{}",
+            "{}/releases/tag/{}",
+            env!("CARGO_PKG_REPOSITORY"),
             args.tag
         ),
         assets,

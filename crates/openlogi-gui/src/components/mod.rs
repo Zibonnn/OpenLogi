@@ -7,4 +7,3 @@
 pub mod carousel;
 pub mod dpi_panel;
 pub mod lighting_panel;
-pub mod toolbar;

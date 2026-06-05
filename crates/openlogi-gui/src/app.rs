@@ -1,8 +1,8 @@
 use gpui::{
     AnyElement, AppContext as _, BorrowAppContext as _, Context, Div, Entity, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, div, img,
-    prelude::FluentBuilder as _, px, relative, rgb,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, WindowControlArea,
+    div, img, prelude::FluentBuilder as _, px, relative, rgb,
 };
 use gpui_component::{
     Collapsible, Icon, IconName,
@@ -12,7 +12,7 @@ use gpui_component::{
     scroll::ScrollableElement as _,
     select::SelectState,
     sidebar::{
-        Sidebar, SidebarCollapsible, SidebarGroup, SidebarItem, SidebarMenu, SidebarMenuItem,
+        Sidebar, SidebarCollapsible, SidebarItem, SidebarMenu, SidebarMenuItem,
     },
     tab::TabBar,
     v_flex,
@@ -22,18 +22,18 @@ use openlogi_core::device::{
     BatteryInfo, BatteryLevel, BatteryStatus, DeviceInventory, DeviceKind,
 };
 use openlogi_hid::DeviceRoute;
+use openlogi_hook::Hook;
 use tracing::{info, warn};
 
 use crate::app_menu::{Minimize, Zoom};
 use crate::asset::AssetResolver;
-use crate::components::carousel::Carousel;
 use crate::components::dpi_panel::DpiPanel;
 use crate::components::lighting_panel::LightingPanel;
 use crate::mouse_model::view::MouseModelView;
 use crate::nav::SidebarNav;
 use crate::settings_pages::{self, LanguageOption, embedded_settings_content, on_language_select};
 use crate::state::{AppState, DeviceRecord};
-use crate::theme::{self, FOOTER_H, Palette};
+use crate::theme::{self, FOOTER_H, Palette, card_shadow, card_shadow_hover};
 use crate::windows::settings;
 
 /// The active section of the device-detail screen. Backs the detail `TabBar`;
@@ -95,7 +95,7 @@ impl DetailTab {
 /// (issue #19); they fall back to the info tab — and, for wired keyboards, the
 /// lighting tab.
 fn is_configurable_pointer(kind: DeviceKind) -> bool {
-    matches!(kind, DeviceKind::Mouse | DeviceKind::Trackball)
+    matches!(kind, DeviceKind::Mouse | DeviceKind::Trackball | DeviceKind::Unknown)
 }
 
 /// Whether to offer the RGB lighting tab — keyboards with per-key RGB only.
@@ -238,72 +238,107 @@ impl AppView {
         }
     }
 
+    /// Query macOS for the live Accessibility trust state and mirror it into
+    /// [`AppState`]. Unsigned or rebuilt binaries often keep a stale `false` in
+    /// state while System Settings already lists the installed `.app` as allowed.
+    fn sync_accessibility(cx: &mut Context<Self>) -> bool {
+        let live = Hook::has_accessibility();
+        if cx.has_global::<AppState>() {
+            cx.update_global::<AppState, _>(|state, _| {
+                state.accessibility_granted = live;
+            });
+        }
+        live
+    }
+
     fn accessibility_gate(pal: Palette, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
             .size_full()
-            .bg(pal.bg)
+            .bg(pal.window_bg)
             .text_color(pal.text_primary)
             .items_center()
             .justify_center()
-            .gap_4()
             .p_8()
             .child(
-                Icon::new(IconName::TriangleAlert)
-                    .size_8()
-                    .text_color(rgb(theme::STATUS_CONNECTING)),
-            )
-            .child(
-                div()
-                    .text_xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(tr!("Accessibility permission required")),
-            )
-            .child(
-                div()
-                    .max_w(px(440.))
-                    .text_sm()
-                    .text_color(pal.text_muted)
-                    .child(tr!(
-                        "OpenLogi captures mouse buttons (Back / Forward / gesture button) \
-                         through the system Accessibility permission and runs the actions you \
-                         bind. Features that talk to the device directly — DPI, SmartShift — \
-                         are unaffected."
-                    )),
-            )
-            .child(
-                div()
-                    .id("open-accessibility")
-                    .px_4()
-                    .py_2()
-                    .rounded_md()
-                    .bg(rgb(theme::ACCENT_BLUE))
-                    .text_color(rgb(0x00ff_ffff))
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
+                v_flex()
+                    .rounded_2xl()
+                    .bg(pal.card_bg)
+                    .shadow(card_shadow())
+                    .p_10()
+                    .gap_4()
+                    .items_center()
+                    .max_w(px(480.))
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(Icon::new(IconName::Settings))
-                            .child(tr!("Open System Settings to grant access")),
+                        Icon::new(IconName::TriangleAlert)
+                            .size_8()
+                            .text_color(rgb(theme::STATUS_CONNECTING)),
                     )
-                    .on_click(|_, _, _| open_accessibility_settings()),
-            )
-            .child(div().text_xs().text_color(pal.text_muted).child(tr!(
-                "Takes effect automatically once granted — no restart needed."
-            )))
-            .child(
-                div()
-                    .id("skip-accessibility")
-                    .text_xs()
-                    .text_color(pal.text_muted)
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(pal.text_primary))
-                    .child(tr!("Not now (use DPI and other features only)"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.accessibility_dismissed = true;
-                        cx.notify();
-                    })),
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(tr!("Accessibility permission required")),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_center()
+                            .text_color(pal.text_muted)
+                            .child(tr!(
+                                "OpenLogi captures mouse buttons (Back / Forward / gesture button) \
+                                 through the system Accessibility permission and runs the actions you \
+                                 bind. Features that talk to the device directly — DPI, SmartShift — \
+                                 are unaffected."
+                            )),
+                    )
+                    .child(
+                        div()
+                            .id("open-accessibility")
+                            .px_4()
+                            .py_2()
+                            .rounded_md()
+                            .bg(rgb(theme::ACCENT_BLUE))
+                            .text_color(rgb(0x00ff_ffff))
+                            .font_weight(FontWeight::MEDIUM)
+                            .cursor_pointer()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(Icon::new(IconName::Settings))
+                                    .child(tr!("Open System Settings to grant access")),
+                            )
+                            .on_click(|_, _, _| open_accessibility_settings()),
+                    )
+                    .child(div().text_xs().text_color(pal.text_muted).child(tr!(
+                        "Takes effect automatically once granted — no restart needed."
+                    )))
+                    .child(
+                        div()
+                            .id("recheck-accessibility")
+                            .text_xs()
+                            .text_color(rgb(theme::ACCENT_BLUE))
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(pal.text_primary))
+                            .child(tr!("Check again"))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                let _ = Self::sync_accessibility(cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("skip-accessibility")
+                            .text_xs()
+                            .text_color(pal.text_muted)
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(pal.text_primary))
+                            .child(tr!("Not now (use DPI and other features only)"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.accessibility_dismissed = true;
+                                cx.notify();
+                            })),
+                    ),
             )
             .into_any_element()
     }
@@ -320,9 +355,7 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = theme::palette(cx);
 
-        let granted = cx
-            .try_global::<AppState>()
-            .is_none_or(|s| s.accessibility_granted);
+        let granted = Self::sync_accessibility(cx);
         if !granted && !self.accessibility_dismissed {
             window.set_window_title("OpenLogi");
             return Self::accessibility_gate(pal, cx);
@@ -378,7 +411,6 @@ impl Render for AppView {
 
         v_flex()
             .size_full()
-            .bg(pal.bg)
             .text_color(pal.text_primary)
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Zoom, window, _| window.zoom_window())
@@ -393,7 +425,8 @@ impl Render for AppView {
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
-                            .bg(pal.bg)
+                            .self_stretch()
+                            .bg(pal.window_bg)
                             .child(main_pane),
                     ),
             )
@@ -402,25 +435,29 @@ impl Render for AppView {
     }
 }
 
-/// Top-level sidebar section — devices list or settings menu group.
+/// Top-level sidebar section — a menu (one or more items), a muted label, or a gap spacer.
 #[derive(Clone)]
 enum MainSidebarSection {
+    /// A group of nav items. Wrapped in `py_1` for breathing room.
     Menu(SidebarMenu),
-    Settings(SidebarGroup<SidebarMenu>),
+    /// Muted section header text (e.g. "Settings").
+    Label(SharedString),
+    /// Transparent vertical gap (px).
+    Spacer(u32),
 }
 
 impl Collapsible for MainSidebarSection {
     fn is_collapsed(&self) -> bool {
         match self {
             Self::Menu(menu) => menu.is_collapsed(),
-            Self::Settings(group) => group.is_collapsed(),
+            Self::Label(_) | Self::Spacer(_) => false,
         }
     }
 
     fn collapsed(self, collapsed: bool) -> Self {
         match self {
             Self::Menu(menu) => Self::Menu(menu.collapsed(collapsed)),
-            Self::Settings(group) => Self::Settings(group.collapsed(collapsed)),
+            other => other,
         }
     }
 }
@@ -433,129 +470,147 @@ impl SidebarItem for MainSidebarSection {
         cx: &mut gpui::App,
     ) -> impl IntoElement {
         match self {
-            Self::Menu(menu) => menu.render(id, window, cx).into_any_element(),
-            Self::Settings(group) => group.render(id, window, cx).into_any_element(),
+            Self::Menu(menu) => div()
+                .py_1()
+                .child(menu.render(id, window, cx))
+                .into_any_element(),
+            Self::Label(text) => {
+                let _ = id;
+                div()
+                    .px_3()
+                    .pt_2()
+                    .pb_0p5()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::palette(cx).text_muted)
+                    .child(text)
+                    .into_any_element()
+            }
+            Self::Spacer(h) => {
+                let _ = id;
+                div().h(px(h as f32)).into_any_element()
+            }
         }
     }
 }
 
 /// macOS System Settings–style sidebar (gpui-component [`Sidebar`] + grouped menus).
-fn app_sidebar(nav: SidebarNav, _pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
+fn app_sidebar(nav: SidebarNav, pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
     let view = cx.entity();
     let devices_view = view.clone();
 
-    let settings_menu = |section: SidebarNav, label: SharedString, icon: IconName| {
-        let active = nav == section;
-        let view = view.clone();
-        SidebarMenuItem::new(label)
-            .icon(icon)
-            .active(active)
-            .on_click(move |_, _, cx| {
-                view.update(cx, |this, cx| this.set_nav(section, cx));
-            })
-    };
+    let nav_item =
+        |section: SidebarNav, label: SharedString, icon: IconName, color: gpui::Rgba| {
+            let active = nav == section;
+            let view = view.clone();
+            MainSidebarSection::Menu(
+                SidebarMenu::new().child(
+                    SidebarMenuItem::new(label)
+                        .icon(Icon::new(icon).text_color(color))
+                        .active(active)
+                        .on_click(move |_, _, cx| {
+                            view.update(cx, |this, cx| this.set_nav(section, cx));
+                        }),
+                ),
+            )
+        };
 
     Sidebar::new("main-sidebar")
         .h_full()
         .flex_shrink_0()
+        .bg(pal.sidebar_bg)
+        .border_r_1()
+        .border_color(pal.sidebar_border)
         .collapsible(SidebarCollapsible::None)
-        .footer(
-            Button::new("sidebar-add-device")
-                .ghost()
-                .icon(IconName::Plus)
-                .label(tr!("Add Device"))
-                .on_click(|_, _, cx| crate::windows::add_device::open(cx)),
+        .header(
+            div()
+                .h(px(44.))
+                .w_full()
+                .window_control_area(WindowControlArea::Drag),
         )
+        .footer(add_device_sidebar_button(pal))
         .child(MainSidebarSection::Menu(
             SidebarMenu::new().child(
                 SidebarMenuItem::new(tr!("Devices"))
-                    .icon(IconName::Cpu)
+                    .icon(Icon::new(IconName::Cpu).text_color(rgb(theme::ACCENT_BLUE)))
                     .active(nav == SidebarNav::Devices)
                     .on_click(move |_, _, cx| {
                         devices_view.update(cx, |this, cx| this.set_nav(SidebarNav::Devices, cx));
                     }),
             ),
         ))
-        .child(MainSidebarSection::Settings(
-            SidebarGroup::new(tr!("Settings")).child(
-                SidebarMenu::new()
-                    .child(settings_menu(
-                        SidebarNav::General,
-                        tr!("General"),
-                        IconName::Settings,
-                    ))
-                    .child(settings_menu(
-                        SidebarNav::Permissions,
-                        tr!("Permissions"),
-                        IconName::Info,
-                    ))
-                    .child(settings_menu(
-                        SidebarNav::Language,
-                        tr!("Language"),
-                        IconName::Globe,
-                    )),
-            ),
-        ))
+        .child(MainSidebarSection::Spacer(16))
+        .child(MainSidebarSection::Label(tr!("Settings")))
+        .child(nav_item(SidebarNav::General, tr!("General"), IconName::Settings, rgb(0x006b_7280)))
+        .child(MainSidebarSection::Spacer(4))
+        .child(nav_item(SidebarNav::Permissions, tr!("Permissions"), IconName::Info, rgb(0x00f9_7316)))
+        .child(MainSidebarSection::Spacer(4))
+        .child(nav_item(SidebarNav::Language, tr!("Language"), IconName::Globe, rgb(0x0022_c55e)))
 }
 
-/// Horizontal gap between preview cards, in pixels.
+/// Gap between preview cards in the grid.
 const GALLERY_GAP: f32 = 24.;
 
-/// Devices overview: original large image preview cards in the main pane.
-fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
-    let (len, active_idx) = cx.try_global::<AppState>().map_or((0, 0), |s| {
-        let len = s.device_list.len();
-        (len, s.current_device.min(len.saturating_sub(1)))
-    });
-    let view = cx.entity();
+/// Outer padding of the device grid (cards breathe from the pane edges).
+const GALLERY_PAD: f32 = 32.;
 
-    v_flex().flex_1().w_full().min_h_0().child(
-        Carousel::new("device-carousel")
-            .len(len)
-            .selected(active_idx)
-            .uniform(px(theme::GALLERY_CARD_W))
-            .gap(px(GALLERY_GAP))
-            .accent(rgb(theme::ACCENT_BLUE).into())
-            .render_item(move |idx, focused, _window, cx| {
-                let pal = theme::palette(cx);
-                let Some(record) = cx
-                    .try_global::<AppState>()
-                    .and_then(|s| s.device_list.get(idx).cloned())
-                else {
-                    return div().into_any_element();
-                };
-                let view = view.clone();
-                device_card(&record, focused, pal)
-                    .id(("device-card", idx))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(pal.surface))
-                    .on_click(move |_, _, cx| {
-                        view.update(cx, |this, cx| this.set_nav(SidebarNav::Device(idx), cx));
-                    })
-                    .into_any_element()
-            })
-            .on_select(cx.listener(|_, ix: &usize, _, cx| {
-                cx.update_global::<AppState, _>(|state, _| state.set_current_device(*ix));
-                cx.notify();
-            })),
-    )
+/// Devices overview: a wrapping grid of device cards, one per device.
+fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
+    let active_idx = cx
+        .try_global::<AppState>()
+        .map_or(0, |s| s.current_device.min(s.device_list.len().saturating_sub(1)));
+
+    let records: Vec<DeviceRecord> = cx
+        .try_global::<AppState>()
+        .map_or_else(Vec::new, |s| s.device_list.clone());
+
+    let view = cx.entity();
+    let pal = theme::palette(cx);
+
+    let cards: Vec<AnyElement> = records
+        .into_iter()
+        .enumerate()
+        .map(|(idx, record)| {
+            let view = view.clone();
+            device_card(&record, idx == active_idx, pal)
+                .id(("device-card", idx))
+                .cursor_pointer()
+                .hover(move |s| s.bg(pal.card_hover_bg).shadow(card_shadow_hover()))
+                .on_click(move |_, _, cx| {
+                    view.update(cx, |this, cx| this.set_nav(SidebarNav::Device(idx), cx));
+                })
+                .into_any_element()
+        })
+        .collect();
+
+    v_flex()
+        .flex_1()
+        .w_full()
+        .min_h_0()
+        .bg(pal.window_bg)
+        .overflow_y_scrollbar()
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .justify_center()
+                .content_start()
+                .gap(px(GALLERY_GAP))
+                .p(px(GALLERY_PAD))
+                .children(cards),
+        )
 }
 
-fn device_card(record: &DeviceRecord, active: bool, pal: Palette) -> Div {
-    let ring = if active {
-        rgb(theme::ACCENT_BLUE).into()
-    } else {
-        gpui::transparent_black()
-    };
+fn device_card(record: &DeviceRecord, _active: bool, pal: Palette) -> Div {
     v_flex()
         .w(px(theme::GALLERY_CARD_W))
         .flex_shrink_0()
         .items_center()
         .gap_3()
-        .p_3()
-        .rounded_xl()
-        .border_1()
-        .border_color(ring)
+        .p_5()
+        .rounded_2xl()
+        .bg(pal.card_bg)
+        .shadow(card_shadow())
         .child(
             div()
                 .w_full()
@@ -705,12 +760,10 @@ fn detail_title_bar(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement
     h_flex()
         .w_full()
         .px_6()
-        .pt_5()
-        .pb_2()
+        .pt_6()
+        .pb_3()
         .gap_3()
         .items_end()
-        .border_b_1()
-        .border_color(pal.border)
         .child(
             div()
                 .flex_1()
@@ -800,7 +853,7 @@ fn detail_tab_bar(
     // Owned copy so the click handler can map a clicked index back to its tab
     // without borrowing the caller's slice.
     let order = tabs.to_vec();
-    div().w_full().px_5().pt_3().child(
+    div().w_full().px_6().pt_2().child(
         TabBar::new("detail-tabs")
             .underline()
             .w_full()
@@ -837,15 +890,16 @@ fn pointer_tab(dpi_panel: &Entity<DpiPanel>, pal: Palette) -> impl IntoElement {
         .flex_1()
         .w_full()
         .min_h_0()
-        .items_center()
+        .min_w_0()
+        .bg(pal.window_bg)
         .overflow_y_scrollbar()
         .p_6()
-        .child(div().w_full().max_w(px(560.)).child(panel_card(
+        .child(panel_card(
             tr!("Pointer tuning"),
             IconName::Settings,
             pal,
             dpi_panel.clone().into_any_element(),
-        )))
+        ))
 }
 
 /// Lighting tab: the RGB controls (swatches, on/off, brightness) in a titled
@@ -855,6 +909,7 @@ fn lighting_tab(lighting_panel: &Entity<LightingPanel>, pal: Palette) -> impl In
         .flex_1()
         .w_full()
         .min_h_0()
+        .bg(pal.window_bg)
         .items_center()
         .overflow_y_scrollbar()
         .p_6()
@@ -872,18 +927,12 @@ fn device_tab(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
         .flex_1()
         .w_full()
         .min_h_0()
+        .bg(pal.window_bg)
         .overflow_y_scrollbar()
         .p_6()
-        .child(
-            h_flex().w_full().justify_center().child(
-                v_flex()
-                    .w_full()
-                    .max_w(px(560.))
-                    .gap_3()
-                    .child(device_details_card(pal, cx))
-                    .child(configuration_card(pal, cx)),
-            ),
-        )
+        .gap_4()
+        .child(device_details_card(pal, cx))
+        .child(configuration_card(pal, cx))
 }
 
 fn device_details_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -901,6 +950,7 @@ fn device_details_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElem
             },
             |record| {
                 v_flex()
+                    .w_full()
                     .gap_3()
                     .child(device_summary(
                         &record.display_name,
@@ -935,6 +985,7 @@ fn configuration_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoEleme
         });
 
     let content = v_flex()
+        .w_full()
         .gap_3()
         .child(
             DescriptionList::new()
@@ -980,12 +1031,14 @@ fn configuration_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoEleme
 
 fn device_summary(name: &str, kind: DeviceKind, online: bool, pal: Palette) -> impl IntoElement {
     h_flex()
+        .w_full()
         .justify_between()
         .gap_3()
         .child(
             v_flex()
-                .gap_1()
+                .flex_1()
                 .min_w_0()
+                .gap_1()
                 .child(
                     div()
                         .text_sm()
@@ -1029,17 +1082,19 @@ fn panel_card(
         .w_full()
         .max_w_full()
         .min_w_0()
-        .rounded_lg()
-        .border_1()
-        .border_color(pal.border)
-        .bg(pal.surface)
-        .p_4()
+        .rounded_xl()
+        .bg(pal.card_bg)
+        .shadow(card_shadow())
+        .p_5()
         .child(
             v_flex()
+                .w_full()
+                .min_w_0()
                 .gap_3()
                 .when(!title.is_empty(), |this| {
                     this.child(
                         h_flex()
+                            .w_full()
                             .items_center()
                             .gap_2()
                             .text_color(pal.text_primary)
@@ -1066,8 +1121,9 @@ fn status_badge(online: bool, pal: Palette) -> impl IntoElement {
         .gap_1()
         .items_center()
         .rounded_full()
+        .bg(pal.card_bg)
         .border_1()
-        .border_color(pal.border)
+        .border_color(pal.sidebar_border)
         .px_2()
         .py_1()
         .text_xs()
@@ -1107,6 +1163,31 @@ fn battery_summary(battery: &BatteryInfo, pal: Palette) -> impl IntoElement {
                         .bg(rgb(battery_color(battery.percentage))),
                 ),
         )
+}
+
+/// Sidebar footer control — white card surface in light mode, raised dark
+/// surface in dark mode.
+fn add_device_sidebar_button(pal: Palette) -> impl IntoElement {
+    h_flex()
+        .id("sidebar-add-device")
+        .w_full()
+        .h(px(32.))
+        .justify_center()
+        .items_center()
+        .gap_2()
+        .rounded_md()
+        .border_1()
+        .border_color(pal.sidebar_border)
+        .bg(pal.card_bg)
+        .shadow(card_shadow())
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(pal.text_primary)
+        .cursor_pointer()
+        .hover(move |s| s.bg(pal.surface_hover).shadow(card_shadow_hover()))
+        .child(Icon::new(IconName::Plus).size_4())
+        .child(tr!("Add Device"))
+        .on_click(|_, _, cx| crate::windows::add_device::open(cx))
 }
 
 fn sidebar_action(
@@ -1187,43 +1268,54 @@ fn device_empty_state(pal: Palette, scanning: bool) -> AnyElement {
         .flex_1()
         .w_full()
         .min_h_0()
+        .bg(pal.window_bg)
         .items_center()
         .justify_center()
-        .gap_4()
         .p_8()
         .child(
-            Icon::new(IconName::Search)
-                .size_8()
-                .text_color(pal.text_muted),
+            v_flex()
+                .rounded_2xl()
+                .bg(pal.card_bg)
+                .shadow(card_shadow())
+                .p_10()
+                .gap_4()
+                .items_center()
+                .max_w(px(480.))
+                .child(
+                    Icon::new(IconName::Search)
+                        .size_8()
+                        .text_color(pal.text_muted),
+                )
+                .child(
+                    div()
+                        .text_xl()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(if scanning {
+                            tr!("Scanning for devices…")
+                        } else {
+                            tr!("No devices connected")
+                        }),
+                )
+                .child(
+                    div()
+                        .max_w(px(360.))
+                        .text_sm()
+                        .text_center()
+                        .text_color(pal.text_muted)
+                        .child(tr!(
+                            "Plug in or pair a supported Logitech device — it'll show up here automatically. For direct Bluetooth connections, pair in your computer's bluetooth settings."
+                        )),
+                )
+                .child(
+                    Button::new("empty-add-device")
+                        .primary()
+                        .label(tr!("Add Device"))
+                        .on_click(|_, _, cx| crate::windows::add_device::open(cx)),
+                )
+                .child(div().max_w(px(360.)).text_xs().text_center().text_color(pal.text_muted).child(tr!(
+                    "Using Logi Options+? Quit it first — both apps compete for HID++ access."
+                ))),
         )
-        .child(
-            div()
-                .text_xl()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(if scanning {
-                    tr!("Scanning for devices…")
-                } else {
-                    tr!("No devices connected")
-                }),
-        )
-        .child(
-            div()
-                .max_w(px(440.))
-                .text_sm()
-                .text_center()
-                .child(tr!(
-                    "Plug in or pair a supported Logitech device — it'll show up here automatically. For direct Bluetooth connections, pair in your computer's bluetooth settings."
-                )),
-        )
-        .child(
-            Button::new("empty-add-device")
-                .primary()
-                .label(tr!("Add Device"))
-                .on_click(|_, _, cx| crate::windows::add_device::open(cx)),
-        )
-        .child(div().mt_1().max_w(px(440.)).text_xs().text_center().text_color(pal.text_muted).child(tr!(
-            "Using Logi Options+? Quit it first — both apps compete for HID++ access."
-        )))
         .into_any_element()
 }
 
@@ -1238,8 +1330,9 @@ fn footer(pal: Palette, granted: bool) -> impl IntoElement {
         .gap_4()
         .items_center()
         .justify_between()
+        .bg(pal.window_bg)
         .border_t_1()
-        .border_color(pal.border)
+        .border_color(pal.sidebar_border)
         .child(accessibility_status(pal, granted))
         .child(
             div()

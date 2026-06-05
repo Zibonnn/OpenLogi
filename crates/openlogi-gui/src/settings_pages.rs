@@ -16,7 +16,7 @@ use gpui_component::{
 
 use crate::platform::permissions::{self, Permission, PermissionStatus};
 use crate::state::AppState;
-use crate::theme::{self, Palette};
+use crate::theme::{self, Palette, card_shadow};
 
 #[derive(Clone)]
 pub struct LanguageOption {
@@ -282,6 +282,13 @@ fn status_badge(status: PermissionStatus) -> impl IntoElement {
     div().text_xs().text_color(rgb(color)).child(label)
 }
 
+/// Trigger width for the language picker in settings rows.
+const LANGUAGE_SELECT_W: f32 = 220.;
+
+/// Popover width — fits the longest entry in [`crate::i18n::SUPPORTED`] without
+/// truncating (Traditional Chinese region labels).
+const LANGUAGE_MENU_W: f32 = 420.;
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "built inside an `Fn` render closure"
@@ -289,12 +296,16 @@ fn status_badge(status: PermissionStatus) -> impl IntoElement {
 fn language_select_field(
     language_select: Entity<SelectState<Vec<LanguageOption>>>,
 ) -> impl IntoElement {
-    div().flex_shrink_0().w(px(220.)).h_6().child(
-        Select::new(&language_select)
-            .small()
-            .w(px(220.))
-            .menu_width(px(220.)),
-    )
+    div()
+        .flex_shrink_0()
+        .w(px(LANGUAGE_SELECT_W))
+        .h_6()
+        .child(
+            Select::new(&language_select)
+                .small()
+                .w(px(LANGUAGE_SELECT_W))
+                .menu_width(px(LANGUAGE_MENU_W)),
+        )
 }
 
 /// Which settings page to show in the main window detail pane.
@@ -466,6 +477,7 @@ fn settings_page_shell(
         .flex_1()
         .w_full()
         .min_h_0()
+        .bg(pal.window_bg)
         .overflow_y_scrollbar()
         .p_6()
         .child(
@@ -496,10 +508,9 @@ fn settings_page_shell(
 fn settings_card(content: impl IntoElement, pal: Palette) -> impl IntoElement {
     div()
         .w_full()
-        .rounded_lg()
-        .border_1()
-        .border_color(pal.border)
-        .bg(pal.surface)
+        .rounded_xl()
+        .bg(pal.card_bg)
+        .shadow(card_shadow())
         .child(content)
 }
 

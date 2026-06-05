@@ -68,7 +68,7 @@ impl Render for UpdateConsentView {
 
         v_flex()
             .size_full()
-            .bg(pal.bg)
+            .bg(pal.card_bg)
             .text_color(pal.text_primary)
             .items_center()
             .justify_center()

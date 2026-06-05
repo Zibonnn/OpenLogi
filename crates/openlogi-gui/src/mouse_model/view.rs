@@ -17,12 +17,12 @@ use crate::mouse_model::leader_lines::{
 };
 use crate::mouse_model::picker::{action_picker, build_gesture_menu};
 use crate::state::AppState;
-use crate::theme::{self, ACCENT_BLUE, Palette};
+use crate::theme::{self, ACCENT_BLUE, Palette, card_shadow, card_shadow_hover};
 
 const SIDE_W: f32 = 180.;
 const SIDE_GAP: f32 = 24.;
-const LABEL_W: f32 = 156.;
-const LABEL_H: f32 = 56.;
+const LABEL_W: f32 = 164.;
+const LABEL_H: f32 = 64.;
 
 const CARD_EDGE_INSET: f32 = SIDE_GAP + (SIDE_W - LABEL_W);
 
@@ -308,7 +308,7 @@ fn label_popover(
             .anchor(Anchor::TopLeft)
             .mouse_button(MouseButton::Left)
             .trigger(trigger)
-            .content(move |_state, _window, cx| action_picker(label.id, &view, cx))
+            .content(move |_state, window, cx| action_picker(label.id, &view, window, cx))
             .into_any_element()
     };
     div()
@@ -369,22 +369,17 @@ impl RenderOnce for LabelTrigger {
             .id(self.id)
             .w(px(LABEL_W))
             .h(px(LABEL_H))
-            .px_3()
-            .py_2()
+            .px_4()
+            .py_3()
             .rounded_md()
-            .border_1()
-            .border_color(if highlighted {
-                rgb(ACCENT_BLUE).into()
+            .bg(pal.card_bg)
+            .shadow(if highlighted {
+                card_shadow_hover()
             } else {
-                pal.border
-            })
-            .bg(if highlighted {
-                pal.surface
-            } else {
-                pal.surface_hover
+                card_shadow()
             })
             .cursor_pointer()
-            .hover(move |s| s.bg(pal.surface))
+            .hover(move |s| s.bg(pal.card_hover_bg).shadow(card_shadow_hover()))
             .child(
                 v_flex()
                     .gap_1()
@@ -510,7 +505,7 @@ fn hotspot_popover(
             .anchor(Anchor::TopRight)
             .mouse_button(MouseButton::Left)
             .trigger(trigger)
-            .content(move |_state, _window, cx| action_picker(hotspot.id, &view, cx))
+            .content(move |_state, window, cx| action_picker(hotspot.id, &view, window, cx))
             .into_any_element()
     };
     div()

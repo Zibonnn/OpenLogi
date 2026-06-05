@@ -16,20 +16,24 @@
 
 use openlogi_core::config::AppSettings;
 
-/// Locales the GUI ships, as `(code, native name)`. The codes match the
-/// sub-keys in `locales/app.yml`; `en` / `zh-CN` / `zh-HK` also match
-/// gpui-component's bundled `ui.yml`, so choosing one localizes the framework's
-/// own widgets too. `ja`, `ru`, and `zh-TW` are *not* in `ui.yml`, so under
-/// those locales our app strings localize but the framework's built-in widget
-/// strings fall back to English.
+/// Locales the GUI ships, as `(code, display label)`. Labels use the format
+/// "{native name} / {English name}" so users can identify their language
+/// regardless of the current UI language. English is the exception — both
+/// names are identical, so the slash form would be redundant.
+///
+/// The codes match the sub-keys in `locales/app.yml`; `en` / `zh-CN` /
+/// `zh-HK` also match gpui-component's bundled `ui.yml`, so choosing one
+/// localizes the framework's own widgets too. `ja`, `ru`, and `zh-TW` are
+/// *not* in `ui.yml`, so under those locales our app strings localize but
+/// the framework's built-in widget strings fall back to English.
 /// Order here is the order shown in the Settings picker (after "Follow system").
 pub const SUPPORTED: &[(&str, &str)] = &[
     ("en", "English"),
-    ("ja", "日本語"),
-    ("ru", "Русский"),
-    ("zh-CN", "简体中文"),
-    ("zh-HK", "繁體中文（香港）"),
-    ("zh-TW", "正體中文（臺灣）"),
+    ("ja", "日本語 / Japanese"),
+    ("ru", "Русский / Russian"),
+    ("zh-CN", "简体中文 / Simplified Chinese"),
+    ("zh-HK", "繁體中文（香港）/ Traditional Chinese (Hong Kong)"),
+    ("zh-TW", "正體中文（臺灣）/ Traditional Chinese (Taiwan)"),
 ];
 
 /// Resolve the locale to apply, preferring an explicit stored `setting`, then

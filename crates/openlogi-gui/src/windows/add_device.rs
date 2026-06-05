@@ -138,7 +138,7 @@ impl Render for AddDeviceView {
 
         v_flex()
             .size_full()
-            .bg(pal.bg)
+            .bg(pal.card_bg)
             .text_color(pal.text_primary)
             .p_6()
             .gap_5()

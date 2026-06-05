@@ -12,16 +12,9 @@ use gpui::{
 use gpui_component::{IconName, button::Button, h_flex, v_flex};
 use gpui_updater::{UpdateStatus, Updater};
 
+use crate::repo_links::{RELEASES_URL, RELEASE_TAG_URL, REPO_URL};
 use crate::theme;
 use crate::windows::{self, AuxWindow};
-
-const REPO_URL: &str = "https://github.com/AprilNEA/OpenLogi";
-const RELEASES_URL: &str = "https://github.com/AprilNEA/OpenLogi/releases/latest";
-/// Release page for this exact build, opened by clicking the version label.
-const RELEASE_TAG_URL: &str = concat!(
-    "https://github.com/AprilNEA/OpenLogi/releases/tag/v",
-    env!("CARGO_PKG_VERSION")
-);
 
 /// Standalone About window root view.
 pub struct AboutView {
@@ -144,7 +137,7 @@ impl Render for AboutView {
 
         v_flex()
             .size_full()
-            .bg(pal.bg)
+            .bg(pal.card_bg)
             .text_color(pal.text_primary)
             .items_center()
             .justify_center()

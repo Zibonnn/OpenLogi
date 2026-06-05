@@ -21,9 +21,6 @@ use crate::hardware::{read_dpi_info_blocking, write_dpi_in_background};
 use crate::state::{AppState, DpiStatus};
 use crate::theme::{self, ACCENT_BLUE, Palette};
 
-/// Slider column width. Matches the right-column layout in `app.rs`.
-const PANEL_W: f32 = 300.;
-
 pub struct DpiPanel {
     slider_state: Option<Entity<SliderState>>,
     slider_sub: Option<Subscription>,
@@ -243,9 +240,11 @@ impl Render for DpiPanel {
 
         v_flex()
             .gap_3()
-            .w(px(PANEL_W))
+            .w_full()
+            .min_w_0()
             .child(
                 h_flex()
+                    .w_full()
                     .justify_between()
                     .items_baseline()
                     .child(div().text_sm().text_color(pal.text_muted).child(tr!("DPI")))
@@ -256,7 +255,7 @@ impl Render for DpiPanel {
                             .child(format!("{}", snapshot.dpi)),
                     ),
             )
-            .child(slider)
+            .child(div().w_full().min_w_0().child(slider))
             .child(
                 div()
                     .text_xs()
@@ -265,6 +264,8 @@ impl Render for DpiPanel {
             )
             .child(
                 v_flex()
+                    .w_full()
+                    .min_w_0()
                     .gap_2()
                     .child(
                         div()
@@ -274,6 +275,7 @@ impl Render for DpiPanel {
                     )
                     .child(
                         h_flex()
+                            .w_full()
                             .gap_2()
                             .flex_wrap()
                             .children(preset_chips)
@@ -332,9 +334,10 @@ fn slider_element(
         (DpiStatus::Ready(info), _) if info.capabilities.min() == info.capabilities.max() => {
             dpi_status_line(&format!("Fixed DPI: {}", info.capabilities.min()), pal)
         }
-        (DpiStatus::Ready(_), Some(slider_state)) => {
-            Slider::new(slider_state).horizontal().into_any_element()
-        }
+        (DpiStatus::Ready(_), Some(slider_state)) => div()
+            .w_full()
+            .child(Slider::new(slider_state).horizontal())
+            .into_any_element(),
         (DpiStatus::Ready(_), None) => dpi_status_line("Preparing DPI slider…", pal),
         (DpiStatus::Unknown | DpiStatus::Loading, _) if !reachable => {
             dpi_status_line("Device offline — DPI unavailable.", pal)

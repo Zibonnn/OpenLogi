@@ -34,6 +34,7 @@ mod i18n;
 mod mouse_model;
 mod nav;
 mod platform;
+mod repo_links;
 mod settings_pages;
 mod state;
 mod theme;
@@ -50,9 +51,9 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use gpui::{
     AppContext, BorrowAppContext as _, Bounds, SharedString, Size, Styled, TitlebarOptions,
-    WindowBounds, WindowOptions, px,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, point, px, transparent_black,
 };
-use gpui_component::{ActiveTheme, Root, Theme, ThemeMode};
+use gpui_component::{Root, Theme, ThemeMode};
 use openlogi_core::config::Config;
 use openlogi_core::device::{DeviceInventory, DeviceModelInfo};
 use openlogi_hook::Hook;
@@ -349,10 +350,11 @@ fn main_window_options(cx: &mut gpui::App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(Size::new(px(880.), px(520.))),
+        window_background: WindowBackgroundAppearance::Blurred,
         titlebar: Some(TitlebarOptions {
             title: Some(SharedString::from("OpenLogi")),
-            appears_transparent: false,
-            traffic_light_position: None,
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(12.), px(20.))),
         }),
         ..WindowOptions::default()
     }
@@ -389,7 +391,7 @@ fn open_main_window(inventories: &[DeviceInventory], cx: &mut gpui::App) {
 
         cx.default_global::<windows::WindowRegistry>().main_view = Some(view.clone());
 
-        cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+        cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))
     });
 
     match opened {
