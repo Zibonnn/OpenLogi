@@ -522,12 +522,7 @@ fn app_sidebar(nav: SidebarNav, pal: Palette, cx: &mut Context<AppView>) -> impl
         .border_r_1()
         .border_color(pal.sidebar_border)
         .collapsible(SidebarCollapsible::None)
-        .header(
-            div()
-                .h(px(44.))
-                .w_full()
-                .window_control_area(WindowControlArea::Drag),
-        )
+        .header(sidebar_header(pal))
         .footer(add_device_sidebar_button(pal))
         .child(MainSidebarSection::Menu(
             SidebarMenu::new().child(
@@ -625,33 +620,14 @@ fn device_card(record: &DeviceRecord, _active: bool, pal: Palette) -> Div {
                 .w_full()
                 .gap_1()
                 .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(record.display_name.clone()),
-                        )
-                        .child(device_status_row(record.online, record.battery.as_ref(), pal)),
-                )
-                .child(
                     div()
                         .w_full()
                         .truncate()
-                        .text_xs()
-                        .text_color(pal.text_muted)
-                        .child(format!(
-                            "{} · slot {}",
-                            kind_label(record.kind),
-                            record.slot
-                        )),
-                ),
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(record.display_name.clone()),
+                )
+                .child(device_status_row(record.online, record.battery.as_ref(), pal)),
         )
 }
 
@@ -1114,6 +1090,35 @@ fn panel_card(
                     )
                 })
                 .child(content),
+        )
+}
+
+/// Traffic-light drag strip, app title, and separator — lives in the sidebar header.
+fn sidebar_header(pal: Palette) -> impl IntoElement {
+    v_flex()
+        .w_full()
+        .child(
+            div()
+                .h(px(24.))
+                .w_full()
+                .window_control_area(WindowControlArea::Drag),
+        )
+        .child(
+            div()
+                .w_full()
+                .px_3()
+                .pt_4()
+                .pb_2()
+                .border_b_1()
+                .border_color(pal.border)
+                .child(
+                    div()
+                        .w_full()
+                        .text_xl()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(pal.text_primary)
+                        .child("OpenLogi"),
+                ),
         )
 }
 
