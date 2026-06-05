@@ -8493,6 +8493,7 @@ version = "0.4.2"
 dependencies = [
  "anyhow",
  "clap",
+ "image",
  "serde",
  "serde_json",
  "sha2",

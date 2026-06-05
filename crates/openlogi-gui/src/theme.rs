@@ -46,7 +46,7 @@ pub struct Palette {
     pub text_primary: Hsla,
     /// Muted metadata.
     pub text_muted: Hsla,
-    /// Sidebar background — zero alpha so the window blur shows through.
+    /// Sidebar surface — #f5f5f5 in light mode, gpui-component `sidebar` in dark.
     pub sidebar_bg: Hsla,
     /// Elevated card surface (white in light mode, raised dark in dark mode).
     pub card_bg: Hsla,
@@ -70,6 +70,7 @@ pub fn palette(cx: &App) -> Palette {
     // pure black on screen. Override with the proper macOS dark canvas so cards
     // stand out against the pane background.
     let dark_canvas = hsla(240. / 360., 0.035, 0.114, 1.0);
+    let light_canvas = hsla(0., 0., 0.98, 1.0); // #fafafa — neutral-50
 
     // Card surface: slightly elevated above the canvas.
     // Light → pure background (white); dark → secondary (raised dark surface).
@@ -89,10 +90,10 @@ pub fn palette(cx: &App) -> Palette {
         border: c.border,
         text_primary: c.foreground,
         text_muted: c.muted_foreground,
-        sidebar_bg: Hsla { a: 0.0, ..c.background },
+        sidebar_bg: if is_light { c.muted } else { c.sidebar },
         card_bg: card,
         card_hover_bg: card_hover,
-        window_bg: if is_light { c.secondary } else { dark_canvas },
+        window_bg: if is_light { light_canvas } else { dark_canvas },
         sidebar_border: Hsla {
             a: if is_light { 0.09 } else { 0.18 },
             ..c.border

@@ -2,7 +2,7 @@ use gpui::{
     AnyElement, AppContext as _, BorrowAppContext as _, Context, Div, Entity, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Window, WindowControlArea,
-    div, img, prelude::FluentBuilder as _, px, relative, rgb,
+    div, img, prelude::FluentBuilder as _, px, rgb,
 };
 use gpui_component::{
     Collapsible, Icon, IconName,
@@ -638,29 +638,19 @@ fn device_card(record: &DeviceRecord, _active: bool, pal: Palette) -> Div {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(record.display_name.clone()),
                         )
-                        .child(status_dot(record.online)),
+                        .child(device_status_row(record.online, record.battery.as_ref(), pal)),
                 )
                 .child(
-                    h_flex()
+                    div()
                         .w_full()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(pal.text_muted)
-                                .child(format!(
-                                    "{} · slot {}",
-                                    kind_label(record.kind),
-                                    record.slot
-                                )),
-                        )
-                        .when_some(record.battery.as_ref(), |this, b| {
-                            this.child(battery_view(b, pal))
-                        }),
+                        .truncate()
+                        .text_xs()
+                        .text_color(pal.text_muted)
+                        .child(format!(
+                            "{} · slot {}",
+                            kind_label(record.kind),
+                            record.slot
+                        )),
                 ),
         )
 }
@@ -683,32 +673,42 @@ fn device_image(record: &DeviceRecord, pal: Palette) -> AnyElement {
     }
 }
 
-/// Connectivity dot for a device preview card (steady; no animated glow).
-fn status_dot(online: bool) -> AnyElement {
-    let color = if online {
-        theme::STATUS_CONNECTED
+/// Connection status pill with inline battery readout:
+/// `[dot] Connected · [battery icon] 80%`
+fn device_status_row(
+    online: bool,
+    battery: Option<&BatteryInfo>,
+    pal: Palette,
+) -> impl IntoElement {
+    let (label, color) = if online {
+        (tr!("Connected"), theme::STATUS_CONNECTED)
     } else {
-        theme::STATUS_OFFLINE
+        (tr!("Offline"), theme::STATUS_OFFLINE)
     };
-    div()
-        .flex_shrink_0()
-        .size(px(8.))
-        .rounded_full()
-        .bg(rgb(color))
-        .into_any_element()
-}
+    let icon = battery
+        .map(battery_icon)
+        .unwrap_or(IconName::Battery);
+    let percentage = battery
+        .map(|b| format!("{}%", b.percentage))
+        .unwrap_or_else(|| "—".to_string());
 
-/// Battery readout beside the device subtitle.
-fn battery_view(b: &BatteryInfo, pal: Palette) -> AnyElement {
     h_flex()
         .flex_shrink_0()
         .gap_1()
         .items_center()
+        .rounded_full()
+        .bg(pal.card_bg)
+        .border_1()
+        .border_color(pal.sidebar_border)
+        .px_2()
+        .py_1()
         .text_xs()
         .text_color(pal.text_muted)
-        .child(Icon::new(battery_icon(b)).size_3())
-        .child(format!("{}%", b.percentage))
-        .into_any_element()
+        .child(div().size_1p5().rounded_full().bg(rgb(color)))
+        .child(label)
+        .child("·")
+        .child(Icon::new(icon).size_3())
+        .child(percentage)
 }
 
 /// Pick the battery glyph from charge state first, then discrete level.
@@ -776,7 +776,9 @@ fn detail_title_bar(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement
                         .map_or_else(|| tr!("Device").to_string(), |r| r.display_name.clone()),
                 ),
         )
-        .when_some(record, |this, r| this.child(status_badge(r.online, pal)))
+        .when_some(record, |this, r| {
+            this.child(device_status_row(r.online, r.battery.as_ref(), pal))
+        })
 }
 
 /// Pick the battery glyph from charge state first (charging / full / error),
@@ -956,11 +958,9 @@ fn device_details_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElem
                         &record.display_name,
                         record.kind,
                         record.online,
+                        record.battery.as_ref(),
                         pal,
                     ))
-                    .when_some(record.battery.as_ref(), |this, battery| {
-                        this.child(battery_summary(battery, pal))
-                    })
                     .child(device_description_list(record))
                     .into_any_element()
             },
@@ -1029,7 +1029,13 @@ fn configuration_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoEleme
     panel_card(tr!("Configuration"), IconName::Folder, pal, content)
 }
 
-fn device_summary(name: &str, kind: DeviceKind, online: bool, pal: Palette) -> impl IntoElement {
+fn device_summary(
+    name: &str,
+    kind: DeviceKind,
+    online: bool,
+    battery: Option<&BatteryInfo>,
+    pal: Palette,
+) -> impl IntoElement {
     h_flex()
         .w_full()
         .justify_between()
@@ -1052,7 +1058,7 @@ fn device_summary(name: &str, kind: DeviceKind, online: bool, pal: Palette) -> i
                         .child(kind_label(kind)),
                 ),
         )
-        .child(status_badge(online, pal))
+        .child(device_status_row(online, battery, pal))
 }
 
 fn device_description_list(record: crate::state::DeviceRecord) -> impl IntoElement {
@@ -1108,60 +1114,6 @@ fn panel_card(
                     )
                 })
                 .child(content),
-        )
-}
-
-fn status_badge(online: bool, pal: Palette) -> impl IntoElement {
-    let (label, color) = if online {
-        (tr!("Connected"), theme::STATUS_CONNECTED)
-    } else {
-        (tr!("Offline"), theme::STATUS_OFFLINE)
-    };
-    h_flex()
-        .gap_1()
-        .items_center()
-        .rounded_full()
-        .bg(pal.card_bg)
-        .border_1()
-        .border_color(pal.sidebar_border)
-        .px_2()
-        .py_1()
-        .text_xs()
-        .text_color(pal.text_muted)
-        .child(div().size_1p5().rounded_full().bg(rgb(color)))
-        .child(label)
-}
-
-fn battery_summary(battery: &BatteryInfo, pal: Palette) -> impl IntoElement {
-    let status = match battery.status {
-        BatteryStatus::Charging | BatteryStatus::ChargingSlow => tr!("Charging"),
-        BatteryStatus::Full => tr!("Full"),
-        BatteryStatus::Error => tr!("Battery error"),
-        BatteryStatus::Discharging | BatteryStatus::Unknown => tr!("Battery"),
-    };
-    v_flex()
-        .gap_2()
-        .child(
-            h_flex()
-                .justify_between()
-                .text_xs()
-                .text_color(pal.text_muted)
-                .child(status)
-                .child(format!("{}%", battery.percentage)),
-        )
-        .child(
-            div()
-                .h(px(6.))
-                .w_full()
-                .rounded_full()
-                .bg(pal.surface_hover)
-                .child(
-                    div()
-                        .h_full()
-                        .w(relative_percent(battery.percentage))
-                        .rounded_full()
-                        .bg(rgb(battery_color(battery.percentage))),
-                ),
         )
 }
 
@@ -1242,18 +1194,6 @@ fn kind_label(kind: DeviceKind) -> String {
         DeviceKind::Headset => tr!("Headset").to_string(),
         DeviceKind::Unknown => tr!("Device").to_string(),
     }
-}
-
-fn battery_color(percentage: u8) -> u32 {
-    match percentage {
-        0..=20 => 0x00ef_4444,
-        21..=50 => theme::STATUS_CONNECTING,
-        _ => theme::STATUS_CONNECTED,
-    }
-}
-
-fn relative_percent(value: u8) -> gpui::DefiniteLength {
-    relative(f32::from(value.clamp(1, 100)) / 100.)
 }
 
 fn file_url(path: &std::path::Path) -> String {

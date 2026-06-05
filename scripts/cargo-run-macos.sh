@@ -31,20 +31,31 @@ PLIST_SRC="$ROOT/crates/openlogi-gui/dev/Info.plist"
 
 mkdir -p "$MACOS" "$RES"
 
-# App icon — gitignored, generated from the master SVG on demand. Mirror it
-# into the bundle whenever the source is newer (or the bundle copy is missing).
-if [ ! -f "$ICON_SRC" ]; then
-  cargo run -p xtask --manifest-path "$ROOT/Cargo.toml" -- macos-icns
-fi
-if [ "$ICON_SRC" -nt "$RES/AppIcon.icns" ]; then
-  cp -f "$ICON_SRC" "$RES/AppIcon.icns"
-fi
-
 # Info.plist — minimal, dev-only. A distinct `.dev` identifier keeps this
 # target artifact from registering as the production app in LaunchServices.
 PLIST="$APP/Contents/Info.plist"
-if [ "$PLIST_SRC" -nt "$PLIST" ]; then
+if [ ! -f "$PLIST" ] || [ "$PLIST_SRC" -nt "$PLIST" ]; then
   cp -f "$PLIST_SRC" "$PLIST"
+fi
+
+# App icon — generated from the master SVG on demand. Mirror into the bundle
+# when missing or changed, then re-register so Dock/LaunchServices pick it up
+# (macOS aggressively caches icons by bundle id).
+if [ ! -f "$ICON_SRC" ]; then
+  cargo run -p xtask --manifest-path "$ROOT/Cargo.toml" -- macos-icns
+fi
+ICON_STAMP="$RES/.AppIcon.md5"
+ICON_MD5="$(md5 -q "$ICON_SRC")"
+if [ ! -f "$RES/AppIcon.icns" ] || [ "$(cat "$ICON_STAMP" 2>/dev/null || true)" != "$ICON_MD5" ]; then
+  cp -f "$ICON_SRC" "$RES/AppIcon.icns"
+  echo "$ICON_MD5" > "$ICON_STAMP"
+  # Bust LaunchServices / Dock icon cache for the dev bundle.
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(date +%s)" "$PLIST"
+  touch "$APP"
+  LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+  if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f -R -trusted "$APP" >/dev/null 2>&1 || true
+  fi
 fi
 
 # Hardlink the freshly built binary into the bundle — instant, no 95 MB copy.
