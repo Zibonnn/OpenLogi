@@ -25,6 +25,7 @@ macro_rules! tr {
 mod app;
 mod app_assets;
 mod app_menu;
+#[cfg(target_os = "macos")]
 mod asset;
 mod components;
 mod data;
@@ -185,19 +186,10 @@ fn main() -> Result<()> {
         })
         .detach();
 
-        // Keep the activation policy in step with window presence — but only
-        // while the menu-bar icon is on. Last window closed + tray on → drop to
-        // accessory (no Dock/menu bar); tray off → stay a regular Dock app so
-        // there's still a way back in. `open_main_window` restores Regular
-        // whenever a window opens.
+        // Keep Dock visibility in step with user settings and open windows.
         #[cfg(target_os = "macos")]
         cx.on_window_closed(|cx, _| {
-            let tray_on = cx
-                .try_global::<AppState>()
-                .is_some_and(|s| s.app_settings().show_in_menu_bar);
-            if tray_on && cx.windows().is_empty() {
-                platform::tray::hide_from_dock();
-            }
+            platform::tray::reconcile_dock_visibility(cx);
         })
         .detach();
 
@@ -220,12 +212,9 @@ fn main() -> Result<()> {
                     open_main_window(&inventories, cx);
                 }
                 #[cfg(target_os = "macos")]
-                if start_minimized {
-                    // Autostart: live in the menu-bar tray with no window.
-                    platform::tray::hide_from_dock();
-                }
+                platform::tray::reconcile_dock_visibility(cx);
                 #[cfg(target_os = "macos")]
-                platform::tray::set_device_lines(&tray_device_lines(cx));
+                platform::tray::set_device_rows(&tray_device_rows(cx));
             });
 
             // First launch only: offer to opt in to the update check, since it
@@ -262,7 +251,7 @@ fn main() -> Result<()> {
                                 state.scanning = false;
                             });
                             #[cfg(target_os = "macos")]
-                            platform::tray::set_device_lines(&tray_device_lines(cx));
+                            platform::tray::set_device_rows(&tray_device_rows(cx));
                         });
                     }
                     Some(bundle) = app_rx.recv() => {
@@ -315,7 +304,7 @@ fn main() -> Result<()> {
                     platform::tray::TrayEvent::Quit => cx.quit(),
                     platform::tray::TrayEvent::Refresh => {
                         platform::tray::refresh_labels();
-                        platform::tray::set_device_lines(&tray_device_lines(cx));
+                        platform::tray::set_device_rows(&tray_device_rows(cx));
                     }
                 });
             }
@@ -352,7 +341,7 @@ fn main_window_options(cx: &mut gpui::App) -> WindowOptions {
         window_min_size: Some(Size::new(px(880.), px(520.))),
         window_background: WindowBackgroundAppearance::Blurred,
         titlebar: Some(TitlebarOptions {
-            title: Some(SharedString::from("OpenLogi")),
+            title: Some(SharedString::from(platform::branding::display_name())),
             appears_transparent: true,
             traffic_light_position: Some(point(px(12.), px(20.))),
         }),
@@ -373,7 +362,7 @@ fn open_main_window(inventories: &[DeviceInventory], cx: &mut gpui::App) {
         {
             cx.activate(true);
             #[cfg(target_os = "macos")]
-            platform::tray::show_in_dock();
+            platform::tray::reconcile_dock_visibility(cx);
             return;
         }
     }
@@ -400,23 +389,23 @@ fn open_main_window(inventories: &[DeviceInventory], cx: &mut gpui::App) {
             cx.default_global::<windows::WindowRegistry>().main = Some(handle);
             cx.activate(true);
             #[cfg(target_os = "macos")]
-            platform::tray::show_in_dock();
+            platform::tray::reconcile_dock_visibility(cx);
         }
         Err(e) => warn!(error = %e, "could not open the main window"),
     }
 }
 
-/// Format the status-item device line from the live [`AppState`], e.g.
-/// `"MX Master 3S · 80%"`, or a placeholder when nothing is connected.
+/// Build structured tray rows from the live [`AppState`].
 #[cfg(target_os = "macos")]
-fn tray_device_lines(cx: &gpui::App) -> Vec<String> {
+fn tray_device_rows(cx: &gpui::App) -> Vec<platform::tray::TrayDeviceRow> {
     cx.try_global::<AppState>().map_or_else(Vec::new, |state| {
         state
             .device_list
             .iter()
-            .map(|record| match &record.battery {
-                Some(battery) => format!("{} · {}%", record.display_name, battery.percentage),
-                None => record.display_name.clone(),
+            .map(|record| platform::tray::TrayDeviceRow {
+                name: record.display_name.clone(),
+                kind: record.kind,
+                battery_percent: record.battery.as_ref().map(|b| b.percentage),
             })
             .collect()
     })

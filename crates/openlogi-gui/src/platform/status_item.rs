@@ -204,6 +204,19 @@ impl Menu {
 pub(super) struct MenuItem(usize);
 
 impl MenuItem {
+    /// Create a disabled item backed by a custom view (e.g. a device row).
+    pub(super) fn disabled_with_view(view: id) -> Self {
+        let item: id = unsafe {
+            msg_send![class!(NSMenuItem), new]
+        };
+        unsafe {
+            let _: id = msg_send![view, retain];
+            let _: () = msg_send![item, setView: view];
+            let _: () = msg_send![item, setEnabled: NO];
+        }
+        Self(item as usize)
+    }
+
     /// Create a disabled title-only item.
     pub(super) fn disabled(title: &str) -> Self {
         let item: id = unsafe {

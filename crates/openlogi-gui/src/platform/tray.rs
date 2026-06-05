@@ -12,8 +12,8 @@
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    TrayEvent, hide_from_dock, install, refresh_labels, request_refresh, set_device_lines,
-    set_visible, show_in_dock, uninstall,
+    TrayDeviceRow, TrayEvent, install, reconcile_dock_visibility, refresh_labels, request_refresh,
+    set_device_rows, set_visible, uninstall,
 };
 
 #[cfg(target_os = "macos")]
@@ -26,12 +26,14 @@ mod macos {
     use cocoa::base::id;
     use objc::runtime::{Object, Sel};
     use objc::{sel, sel_impl};
+    use openlogi_core::device::DeviceKind;
     use tokio::sync::mpsc;
     use tracing::warn;
 
     use super::super::status_item::{
         self, ActionCallback, ActionTarget, ActivationPolicy, Menu, MenuItem, StatusItem,
     };
+    use crate::platform::tray_row::TrayRowView;
 
     /// A request raised by clicking a status-bar menu item, or by a live
     /// language switch asking the drain task to re-localize the whole menu.
@@ -41,6 +43,14 @@ mod macos {
         Quit,
         /// Re-title Open/Quit *and* the device line for the current locale.
         Refresh,
+    }
+
+    /// One connected device row shown in the tray menu.
+    #[derive(Debug, Clone)]
+    pub struct TrayDeviceRow {
+        pub name: String,
+        pub kind: DeviceKind,
+        pub battery_percent: Option<u8>,
     }
 
     const TARGET_CLASS: &str = "OpenLogiMenuTarget";
@@ -55,9 +65,12 @@ mod macos {
     /// How many device rows the tray menu can show at once.
     const MAX_DEVICE_ROWS: usize = 8;
 
-    /// The device-status line items, written by [`set_device_lines`] — one per
+    /// The device-status row views, written by [`set_device_rows`] — one per
     /// connected device, spare rows hidden. Only ever touched on the main thread.
     static DEVICE_ITEMS: OnceLock<Vec<MenuItem>> = OnceLock::new();
+
+    /// Retained row views backing each device menu item.
+    static DEVICE_VIEWS: OnceLock<Vec<TrayRowView>> = OnceLock::new();
 
     /// The `NSStatusItem` itself, so [`set_visible`] can show / hide the icon.
     static STATUS_ITEM: OnceLock<StatusItem> = OnceLock::new();
@@ -74,16 +87,10 @@ mod macos {
         menu: Menu,
         refs: MenuRefs,
         device_items: Vec<MenuItem>,
+        device_views: Vec<TrayRowView>,
     }
 
     /// Install the status item. Main thread only.
-    ///
-    /// The activation policy (Dock + menu-bar visibility) is *not* set here —
-    /// [`show_in_dock`] / [`hide_from_dock`] manage it as windows open and
-    /// close. The status item, its menu, and the click target are all retained
-    /// for the app's lifetime (a status item lives as long as the process); the
-    /// target in particular *must* be retained, since `NSMenuItem` keeps only a
-    /// weak reference to it.
     pub fn install(tx: mpsc::UnboundedSender<TrayEvent>) {
         if INSTALLED.swap(true, Ordering::AcqRel) {
             return;
@@ -93,20 +100,17 @@ mod macos {
 
         let status_item = StatusItem::new();
         let _ = STATUS_ITEM.set(status_item);
-        status_item.set_symbol_icon("computermouse.fill", "OpenLogi", "OpenLogi");
+        let name = crate::platform::branding::display_name();
+        status_item.set_symbol_icon("computermouse.fill", name, name);
 
         let installed_menu = build_menu();
         let _ = DEVICE_ITEMS.set(installed_menu.device_items);
+        let _ = DEVICE_VIEWS.set(installed_menu.device_views);
         let _ = MENU_REFS.set(installed_menu.refs);
         status_item.set_menu(installed_menu.menu);
     }
 
     /// Remove the status item from the system status bar during app teardown.
-    ///
-    /// `NSStatusItem`s normally disappear when the process exits, but GPUI's
-    /// graceful quit can leave background workers winding down briefly. Removing
-    /// it explicitly avoids a stale, non-clickable menu-bar gap during teardown
-    /// and makes repeated calls harmless.
     pub fn uninstall() {
         if !INSTALLED.swap(false, Ordering::AcqRel) {
             return;
@@ -123,26 +127,27 @@ mod macos {
 
         let idle = rust_i18n::t!("No devices connected");
         let mut device_items = Vec::with_capacity(MAX_DEVICE_ROWS);
+        let mut device_views = Vec::with_capacity(MAX_DEVICE_ROWS);
         for i in 0..MAX_DEVICE_ROWS {
-            let label = if i == 0 {
-                idle.to_string()
-            } else {
-                String::new()
-            };
-            let item = MenuItem::disabled(&label);
+            let view = TrayRowView::new_device();
+            if i == 0 {
+                view.update_empty(&idle);
+            }
+            let item = MenuItem::disabled_with_view(view.raw());
             item.set_hidden(i != 0);
             menu.add_item(item);
             device_items.push(item);
+            device_views.push(view);
         }
 
         menu.add_separator();
 
         let open_selector = sel!(openOpenLogi:);
         let quit_selector = sel!(quitOpenLogi:);
-        let open_title = rust_i18n::t!("Open OpenLogi");
+        let open_title = tray_open_label();
         let open_item = MenuItem::action(&open_title, open_selector, &target);
         menu.add_item(open_item);
-        let quit_title = rust_i18n::t!("Quit OpenLogi");
+        let quit_title = tray_quit_label();
         let quit_item = MenuItem::action(&quit_title, quit_selector, &target);
         menu.add_item(quit_item);
 
@@ -153,6 +158,7 @@ mod macos {
                 quit: quit_item,
             },
             device_items,
+            device_views,
         }
     }
 
@@ -172,14 +178,25 @@ mod macos {
         status_item::set_activation_policy(ActivationPolicy::Regular);
     }
 
-    /// Drop the app out of the Dock + menu bar, leaving only the status item —
-    /// called when the last window closes (and on a `--minimized` launch).
+    /// Drop the app out of the Dock + menu bar, leaving only the status item.
     pub fn hide_from_dock() {
         status_item::set_activation_policy(ActivationPolicy::Accessory);
     }
 
-    /// Show or hide the status-item icon without tearing it down — backs the
-    /// "Show in menu bar" setting. A no-op until [`install`] has run.
+    /// Keep Dock visibility in step with user settings and open windows.
+    pub fn reconcile_dock_visibility(cx: &gpui::App) {
+        let Some(state) = cx.try_global::<crate::state::AppState>() else {
+            return;
+        };
+        let settings = state.app_settings();
+        if cx.windows().is_empty() && settings.hide_from_dock && settings.show_in_menu_bar {
+            hide_from_dock();
+        } else {
+            show_in_dock();
+        }
+    }
+
+    /// Show or hide the status-item icon without tearing it down.
     pub fn set_visible(visible: bool) {
         let Some(item) = STATUS_ITEM.get() else {
             return;
@@ -187,18 +204,17 @@ mod macos {
         item.set_visible(visible);
     }
 
-    /// Update the device rows — one per connected device (e.g.
-    /// `"MX Master 3S · 80%"`, `"G513 Carbon GX Blue"`). Spare rows are hidden;
-    /// an empty list shows the "No devices connected" placeholder. Main-thread
-    /// only, and a no-op until [`install`] has published the items.
-    pub fn set_device_lines(lines: &[String]) {
-        let Some(items) = DEVICE_ITEMS.get() else {
+    /// Update the device rows — one per connected device. Spare rows are hidden;
+    /// an empty list shows the "No devices connected" placeholder.
+    pub fn set_device_rows(rows: &[TrayDeviceRow]) {
+        let (Some(items), Some(views)) = (DEVICE_ITEMS.get(), DEVICE_VIEWS.get()) else {
             return;
         };
-        if lines.is_empty() {
+
+        if rows.is_empty() {
             let idle = rust_i18n::t!("No devices connected");
-            if let Some(first) = items.first() {
-                first.set_title(&idle);
+            if let (Some(first), Some(first_view)) = (items.first(), views.first()) {
+                first_view.update_empty(&idle);
                 first.set_hidden(false);
             }
             for item in items.iter().skip(1) {
@@ -206,9 +222,10 @@ mod macos {
             }
             return;
         }
-        for (i, item) in items.iter().enumerate() {
-            if let Some(line) = lines.get(i) {
-                item.set_title(line);
+
+        for (i, (item, view)) in items.iter().zip(views.iter()).enumerate() {
+            if let Some(row) = rows.get(i) {
+                view.update_device(&row.name, row.kind, row.battery_percent);
                 item.set_hidden(false);
             } else {
                 item.set_hidden(true);
@@ -216,23 +233,24 @@ mod macos {
         }
     }
 
-    /// Re-title the Open/Quit items for the current locale. Main-thread only,
-    /// like every status-item write. The device rows are refreshed separately via
-    /// [`set_device_lines`].
+    /// Re-title the Open/Quit items for the current locale.
     pub fn refresh_labels() {
         let Some(refs) = MENU_REFS.get() else {
             return;
         };
-        let open_title = rust_i18n::t!("Open OpenLogi");
-        let quit_title = rust_i18n::t!("Quit OpenLogi");
-        refs.open.set_title(&open_title);
-        refs.quit.set_title(&quit_title);
+        refs.open.set_title(&tray_open_label());
+        refs.quit.set_title(&tray_quit_label());
     }
 
-    /// Ask the drain task to re-localize the whole menu after a live language
-    /// switch. Posts through the same channel as menu clicks so the device line
-    /// (recomputed from the live `AppState`, which only the task can read) is
-    /// rewritten on the main thread alongside the static labels.
+    fn tray_open_label() -> String {
+        format!("Open {}", crate::platform::branding::display_name())
+    }
+
+    fn tray_quit_label() -> String {
+        format!("Quit {}", crate::platform::branding::display_name())
+    }
+
+    /// Ask the drain task to re-localize the whole menu after a live language switch.
     pub fn request_refresh() {
         post(TrayEvent::Refresh);
     }

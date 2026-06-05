@@ -357,7 +357,7 @@ impl Render for AppView {
 
         let granted = Self::sync_accessibility(cx);
         if !granted && !self.accessibility_dismissed {
-            window.set_window_title("OpenLogi");
+            window.set_window_title(&crate::platform::branding::display_name());
             return Self::accessibility_gate(pal, cx);
         }
 
@@ -499,21 +499,20 @@ fn app_sidebar(nav: SidebarNav, pal: Palette, cx: &mut Context<AppView>) -> impl
     let view = cx.entity();
     let devices_view = view.clone();
 
-    let nav_item =
-        |section: SidebarNav, label: SharedString, icon: IconName, color: gpui::Rgba| {
-            let active = nav == section;
-            let view = view.clone();
-            MainSidebarSection::Menu(
-                SidebarMenu::new().child(
-                    SidebarMenuItem::new(label)
-                        .icon(Icon::new(icon).text_color(color))
-                        .active(active)
-                        .on_click(move |_, _, cx| {
-                            view.update(cx, |this, cx| this.set_nav(section, cx));
-                        }),
-                ),
-            )
-        };
+    let nav_item = |section: SidebarNav, label: SharedString, icon: Icon, color: gpui::Rgba| {
+        let active = nav == section;
+        let view = view.clone();
+        MainSidebarSection::Menu(
+            SidebarMenu::new().child(
+                SidebarMenuItem::new(label)
+                    .icon(icon.text_color(color))
+                    .active(active)
+                    .on_click(move |_, _, cx| {
+                        view.update(cx, |this, cx| this.set_nav(section, cx));
+                    }),
+            ),
+        )
+    };
 
     Sidebar::new("main-sidebar")
         .h_full()
@@ -527,7 +526,7 @@ fn app_sidebar(nav: SidebarNav, pal: Palette, cx: &mut Context<AppView>) -> impl
         .child(MainSidebarSection::Menu(
             SidebarMenu::new().child(
                 SidebarMenuItem::new(tr!("Devices"))
-                    .icon(Icon::new(IconName::Cpu).text_color(rgb(theme::ACCENT_BLUE)))
+                    .icon(devices_sidebar_icon())
                     .active(nav == SidebarNav::Devices)
                     .on_click(move |_, _, cx| {
                         devices_view.update(cx, |this, cx| this.set_nav(SidebarNav::Devices, cx));
@@ -536,11 +535,26 @@ fn app_sidebar(nav: SidebarNav, pal: Palette, cx: &mut Context<AppView>) -> impl
         ))
         .child(MainSidebarSection::Spacer(16))
         .child(MainSidebarSection::Label(tr!("Settings")))
-        .child(nav_item(SidebarNav::General, tr!("General"), IconName::Settings, rgb(0x006b_7280)))
+        .child(nav_item(
+            SidebarNav::General,
+            tr!("General"),
+            settings_sidebar_icon(SidebarNav::General),
+            rgb(0x006b_7280),
+        ))
         .child(MainSidebarSection::Spacer(4))
-        .child(nav_item(SidebarNav::Permissions, tr!("Permissions"), IconName::Info, rgb(0x00f9_7316)))
+        .child(nav_item(
+            SidebarNav::Permissions,
+            tr!("Permissions"),
+            settings_sidebar_icon(SidebarNav::Permissions),
+            rgb(0x00f9_7316),
+        ))
         .child(MainSidebarSection::Spacer(4))
-        .child(nav_item(SidebarNav::Language, tr!("Language"), IconName::Globe, rgb(0x0022_c55e)))
+        .child(nav_item(
+            SidebarNav::Language,
+            tr!("Language"),
+            settings_sidebar_icon(SidebarNav::Language),
+            rgb(0x0022_c55e),
+        ))
 }
 
 /// Gap between preview cards in the grid.
@@ -644,9 +658,27 @@ fn device_image(record: &DeviceRecord, pal: Palette) -> AnyElement {
             .flex()
             .items_center()
             .justify_center()
-            .child(Icon::new(IconName::Cpu).size_8().text_color(pal.text_muted))
+            .child(device_placeholder_icon(pal))
             .into_any_element(),
     }
+}
+
+fn devices_sidebar_icon() -> Icon {
+    Icon::new(IconName::Cpu).text_color(rgb(theme::ACCENT_BLUE))
+}
+
+fn settings_sidebar_icon(section: SidebarNav) -> Icon {
+    let icon = match section {
+        SidebarNav::General => IconName::Settings,
+        SidebarNav::Permissions => IconName::Info,
+        SidebarNav::Language => IconName::Globe,
+        _ => IconName::Settings,
+    };
+    Icon::new(icon)
+}
+
+fn device_placeholder_icon(pal: Palette) -> Icon {
+    Icon::new(IconName::Cpu).size_8().text_color(pal.text_muted)
 }
 
 /// Connection status pill with inline battery readout:
@@ -761,7 +793,7 @@ fn detail_title_bar(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement
 /// then fall back to the discrete charge level for a plain discharge.
 fn main_window_title(nav: SidebarNav, cx: &Context<AppView>) -> SharedString {
     if matches!(nav, SidebarNav::Devices) {
-        return SharedString::from("OpenLogi");
+        return SharedString::from(crate::platform::branding::display_name());
     }
     if let Some(section) = nav.settings_section() {
         let title = match section {
@@ -769,13 +801,19 @@ fn main_window_title(nav: SidebarNav, cx: &Context<AppView>) -> SharedString {
             settings_pages::SettingsSection::Permissions => tr!("Permissions"),
             settings_pages::SettingsSection::Language => tr!("Language"),
         };
-        return SharedString::from(format!("OpenLogi — {}", title));
+        return SharedString::from(crate::platform::branding::window_title(Some(
+            title.as_ref(),
+        )));
     }
     cx.try_global::<AppState>()
         .and_then(AppState::current_record)
         .map_or_else(
-            || SharedString::from("OpenLogi"),
-            |record| SharedString::from(format!("OpenLogi — {}", record.display_name)),
+            || SharedString::from(crate::platform::branding::display_name()),
+            |record| {
+                SharedString::from(crate::platform::branding::window_title(Some(
+                    &record.display_name,
+                )))
+            },
         )
 }
 
@@ -1117,7 +1155,7 @@ fn sidebar_header(pal: Palette) -> impl IntoElement {
                         .text_xl()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(pal.text_primary)
-                        .child("OpenLogi"),
+                        .child(crate::platform::branding::display_name()),
                 ),
         )
 }

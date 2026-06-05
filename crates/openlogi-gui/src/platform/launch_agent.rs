@@ -19,10 +19,8 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use tracing::{info, warn};
 
-/// Stable launch-agent identifier — matches the bundle id in
-/// `crates/openlogi-gui/Cargo.toml [package.metadata.bundle]`.
 #[cfg(target_os = "macos")]
-const LABEL: &str = "org.openlogi.openlogi";
+use super::branding;
 
 /// Reconcile the on-disk `LaunchAgent` plist with `enabled`. Idempotent:
 /// no-op when the file already matches the desired state.
@@ -82,7 +80,7 @@ fn plist_path() -> io::Result<PathBuf> {
     Ok(PathBuf::from(home)
         .join("Library")
         .join("LaunchAgents")
-        .join(format!("{LABEL}.plist")))
+        .join(format!("{}.plist", branding::launch_agent_label())))
 }
 
 #[cfg(target_os = "macos")]
@@ -97,7 +95,7 @@ fn render_plist(exe: &str) -> String {
         <plist version=\"1.0\">\n\
         <dict>\n  \
         <key>Label</key>\n  \
-        <string>{LABEL}</string>\n  \
+        <string>{label}</string>\n  \
         <key>ProgramArguments</key>\n  \
         <array>\n    \
         <string>{exe}</string>\n    \
@@ -109,6 +107,8 @@ fn render_plist(exe: &str) -> String {
         <false/>\n\
         </dict>\n\
         </plist>\n",
+        label = branding::launch_agent_label(),
+        exe = exe,
     )
 }
 
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn rendered_plist_contains_expected_keys() {
         let body = render_plist("/Applications/OpenLogi.app/Contents/MacOS/openlogi-gui");
-        assert!(body.contains(LABEL));
+        assert!(body.contains(branding::launch_agent_label()));
         assert!(body.contains("/Applications/OpenLogi.app/Contents/MacOS/openlogi-gui"));
         assert!(body.contains("RunAtLoad"));
         assert!(body.contains("--minimized"));

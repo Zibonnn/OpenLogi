@@ -652,11 +652,19 @@ impl AppState {
             warn!(error = %e, "could not persist show-in-menu-bar setting");
         }
         #[cfg(target_os = "macos")]
-        {
-            crate::platform::tray::set_visible(enabled);
-            if !enabled {
-                crate::platform::tray::show_in_dock();
-            }
+        crate::platform::tray::set_visible(enabled);
+    }
+
+    /// Toggle whether the Dock icon is hidden once all windows are closed.
+    /// macOS-only; the toggle that calls it exists only there.
+    #[cfg(target_os = "macos")]
+    pub fn set_hide_from_dock(&mut self, enabled: bool) {
+        if self.config.app_settings.hide_from_dock == enabled {
+            return;
+        }
+        self.config.app_settings.hide_from_dock = enabled;
+        if let Err(e) = self.config.save_atomic() {
+            warn!(error = %e, "could not persist hide-from-dock setting");
         }
     }
 

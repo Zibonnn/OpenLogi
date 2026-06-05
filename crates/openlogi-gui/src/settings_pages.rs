@@ -6,7 +6,7 @@ use gpui::{
     px, rgb,
 };
 use gpui_component::{
-    IconName, IndexPath, Sizable as _, h_flex,
+    Disableable as _, Icon, IndexPath, Sizable as _, h_flex,
     scroll::ScrollableElement as _,
     select::{Select, SelectEvent, SelectItem, SelectState},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage},
@@ -145,36 +145,59 @@ pub fn general_page() -> SettingPage {
         );
 
     #[cfg(target_os = "macos")]
-    let group = group.item(
-        SettingItem::new(
-            tr!("Show in menu bar"),
-            SettingField::switch(
-                |cx| {
-                    cx.try_global::<AppState>()
-                        .is_some_and(|s| s.app_settings().show_in_menu_bar)
-                },
-                |enabled, cx| {
-                    cx.update_global::<AppState, _>(move |s, _| {
-                        s.set_show_in_menu_bar(enabled);
-                    });
-                    cx.refresh_windows();
-                },
-            ),
+    let group = group
+        .item(
+            SettingItem::new(
+                tr!("Show in menu bar"),
+                SettingField::switch(
+                    |cx| {
+                        cx.try_global::<AppState>()
+                            .is_some_and(|s| s.app_settings().show_in_menu_bar)
+                    },
+                    |enabled, cx| {
+                        cx.update_global::<AppState, _>(move |s, _| {
+                            s.set_show_in_menu_bar(enabled);
+                        });
+                        crate::platform::tray::reconcile_dock_visibility(cx);
+                        cx.refresh_windows();
+                    },
+                ),
+            )
+            .description(tr!(
+                "Keep OpenLogi's icon in the menu bar. When off, it stays in the Dock instead."
+            )),
         )
-        .description(tr!(
-            "Keep OpenLogi's icon in the menu bar. When off, it stays in the Dock instead."
-        )),
-    );
+        .item(
+            SettingItem::new(
+                tr!("Hide from Dock"),
+                SettingField::switch(
+                    |cx| {
+                        cx.try_global::<AppState>()
+                            .is_some_and(|s| s.app_settings().hide_from_dock)
+                    },
+                    |enabled, cx| {
+                        cx.update_global::<AppState, _>(move |s, _| {
+                            s.set_hide_from_dock(enabled);
+                        });
+                        crate::platform::tray::reconcile_dock_visibility(cx);
+                        cx.refresh_windows();
+                    },
+                ),
+            )
+            .description(tr!(
+                "Hide the Dock icon when all windows are closed. Requires the menu-bar icon to reopen the app."
+            )),
+        );
 
     SettingPage::new(tr!("General"))
-        .icon(IconName::Settings)
+        .icon(settings_page_icon(SettingsSection::General))
         .resettable(false)
         .group(group)
 }
 
 pub fn permissions_page(pal: Palette) -> SettingPage {
     SettingPage::new(tr!("Permissions"))
-        .icon(IconName::Info)
+        .icon(settings_page_icon(SettingsSection::Permissions))
         .resettable(false)
         .group(
             SettingGroup::new()
@@ -231,7 +254,7 @@ fn permission_item(
 
 pub fn language_page(language_select: Entity<SelectState<Vec<LanguageOption>>>) -> SettingPage {
     SettingPage::new(tr!("Language"))
-        .icon(IconName::Globe)
+        .icon(settings_page_icon(SettingsSection::Language))
         .resettable(false)
         .group(
             SettingGroup::new().item(
@@ -308,6 +331,16 @@ fn language_select_field(
         )
 }
 
+fn settings_page_icon(section: SettingsSection) -> Icon {
+    use gpui_component::IconName;
+    let name = match section {
+        SettingsSection::General => IconName::Settings,
+        SettingsSection::Permissions => IconName::Info,
+        SettingsSection::Language => IconName::Globe,
+    };
+    Icon::new(name)
+}
+
 /// Which settings page to show in the main window detail pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -333,19 +366,20 @@ pub fn embedded_settings_content(
 }
 
 fn embedded_general_settings(pal: Palette, cx: &mut App) -> impl IntoElement {
-    let (launch_at_login, check_for_updates, show_in_menu_bar) = cx
+    let (launch_at_login, check_for_updates, show_in_menu_bar, hide_from_dock) = cx
         .try_global::<AppState>()
-        .map_or((false, false, false), |s| {
+        .map_or((false, false, false, false), |s| {
             let settings = s.app_settings();
             (
                 settings.launch_at_login,
                 settings.check_for_updates,
                 settings.show_in_menu_bar,
+                settings.hide_from_dock,
             )
         });
 
     #[cfg(not(target_os = "macos"))]
-    let _ = show_in_menu_bar;
+    let _ = (show_in_menu_bar, hide_from_dock);
 
     let rows = v_flex()
         .gap_0()
@@ -373,17 +407,39 @@ fn embedded_general_settings(pal: Palette, cx: &mut App) -> impl IntoElement {
         ));
 
     #[cfg(target_os = "macos")]
-    let rows = rows.child(settings_switch_row(
-        "settings-menu-bar",
-        tr!("Show in menu bar"),
-        tr!("Keep OpenLogi's icon in the menu bar. When off, it stays in the Dock instead."),
-        show_in_menu_bar,
-        |enabled, cx| {
-            cx.update_global::<AppState, _>(move |s, _| s.set_show_in_menu_bar(enabled));
-            cx.refresh_windows();
-        },
-        pal,
-    ));
+    let rows = rows
+        .child(settings_switch_row(
+            "settings-menu-bar",
+            tr!("Show in menu bar"),
+            tr!("Keep OpenLogi's icon in the menu bar. When off, it stays in the Dock instead."),
+            show_in_menu_bar,
+            |enabled, cx| {
+                cx.update_global::<AppState, _>(move |s, _| s.set_show_in_menu_bar(enabled));
+                crate::platform::tray::reconcile_dock_visibility(cx);
+                cx.refresh_windows();
+            },
+            pal,
+        ))
+        .child({
+            let description = if show_in_menu_bar {
+                tr!("Hide the Dock icon when all windows are closed. Requires the menu-bar icon to reopen the app.")
+            } else {
+                tr!("Requires the menu-bar icon to be enabled.")
+            };
+            settings_switch_row_disabled(
+                "settings-hide-dock",
+                tr!("Hide from Dock"),
+                description,
+                hide_from_dock,
+                !show_in_menu_bar,
+                |enabled, cx| {
+                    cx.update_global::<AppState, _>(move |s, _| s.set_hide_from_dock(enabled));
+                    crate::platform::tray::reconcile_dock_visibility(cx);
+                    cx.refresh_windows();
+                },
+                pal,
+            )
+        });
 
     settings_page_shell(
         tr!("General"),
@@ -522,11 +578,24 @@ fn settings_switch_row(
     on_toggle: impl Fn(bool, &mut App) + 'static,
     pal: Palette,
 ) -> impl IntoElement {
+    settings_switch_row_disabled(id, title, description, checked, false, on_toggle, pal)
+}
+
+fn settings_switch_row_disabled(
+    id: &'static str,
+    title: SharedString,
+    description: SharedString,
+    checked: bool,
+    disabled: bool,
+    on_toggle: impl Fn(bool, &mut App) + 'static,
+    pal: Palette,
+) -> impl IntoElement {
     settings_action_row(
         title,
         description,
         Switch::new(id)
             .checked(checked)
+            .disabled(disabled)
             .on_click(move |enabled, _, cx| {
                 on_toggle(*enabled, cx);
             }),

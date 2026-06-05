@@ -9,8 +9,9 @@
 //! On Linux/Windows the menus + key bindings are stored but never surfaced
 //! in a top-of-screen bar — calling `install` there is a harmless no-op.
 
-use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, actions};
+use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SharedString, actions};
 
+use crate::platform::branding;
 use crate::repo_links::{HELP_URL, RELEASES_URL, REPO_URL};
 use crate::state::AppState;
 
@@ -119,10 +120,13 @@ fn menus(cx: &App) -> Vec<Menu> {
     vec![
         Menu {
             // The app menu's name is the product name, not a translatable string.
-            name: "OpenLogi".into(),
+            name: branding::display_name().into(),
             disabled: false,
             items: vec![
-                MenuItem::action(tr!("About OpenLogi"), OpenAbout),
+                MenuItem::action(
+                    SharedString::from(format!("About {}", branding::display_name())),
+                    OpenAbout,
+                ),
                 MenuItem::action(tr!("Check for Updates…"), CheckForUpdates),
                 MenuItem::separator(),
                 MenuItem::action(tr!("Settings…"), OpenSettings),
@@ -133,14 +137,20 @@ fn menus(cx: &App) -> Vec<Menu> {
                 #[cfg(target_os = "macos")]
                 MenuItem::separator(),
                 #[cfg(target_os = "macos")]
-                MenuItem::action(tr!("Hide OpenLogi"), Hide),
+                MenuItem::action(
+                    SharedString::from(format!("Hide {}", branding::display_name())),
+                    Hide,
+                ),
                 #[cfg(target_os = "macos")]
                 MenuItem::action(tr!("Hide Others"), HideOthers),
                 #[cfg(target_os = "macos")]
                 MenuItem::action(tr!("Show All"), ShowAll),
                 #[cfg(target_os = "macos")]
                 MenuItem::separator(),
-                MenuItem::action(tr!("Quit OpenLogi"), Quit),
+                MenuItem::action(
+                    SharedString::from(format!("Quit {}", branding::display_name())),
+                    Quit,
+                ),
             ],
         },
         Menu {

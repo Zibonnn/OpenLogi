@@ -87,6 +87,11 @@ pub struct AppSettings {
     /// item. macOS-only; ignored on other platforms.
     #[serde(default = "default_true")]
     pub show_in_menu_bar: bool,
+    /// When true (default), hide the Dock icon once all windows are closed.
+    /// Requires the menu-bar icon (or a relaunch) to reopen the app.
+    /// macOS-only; ignored on other platforms.
+    #[serde(default = "default_true")]
+    pub hide_from_dock: bool,
     /// UI language as a BCP-47-ish locale code matching the GUI's bundled
     /// locales (`"en"`, `"ja"`, `"ru"`, `"zh-CN"`, `"zh-HK"`, `"zh-TW"`).
     /// `None` means "follow the system locale", which the GUI resolves at
@@ -112,6 +117,7 @@ impl Default for AppSettings {
             check_for_updates: false,
             update_prompt_seen: false,
             show_in_menu_bar: true,
+            hide_from_dock: true,
             language: None,
         }
     }

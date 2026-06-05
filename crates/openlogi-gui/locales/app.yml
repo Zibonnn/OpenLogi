@@ -564,6 +564,24 @@ _version: 2
   zh-CN: 在菜单栏保留 OpenLogi 图标；关闭后改为停留在程序坞中。
   zh-HK: 在選單列保留 OpenLogi 圖示；關閉後改為停留在 Dock 中。
   zh-TW: 在選單列保留 OpenLogi 圖示；關閉後改為停留在 Dock 中。
+"Hide from Dock":
+  ja: Dock から非表示
+  ru: "Скрывать из Dock"
+  zh-CN: 从程序坞隐藏
+  zh-HK: 從 Dock 隱藏
+  zh-TW: 從 Dock 隱藏
+"Hide the Dock icon when all windows are closed. Requires the menu-bar icon to reopen the app.":
+  ja: すべてのウィンドウを閉じたときに Dock アイコンを非表示にします。アプリを再度開くにはメニューバーアイコンが必要です。
+  ru: "Скрывать значок в Dock, когда все окна закрыты. Для повторного открытия нужен значок в строке меню."
+  zh-CN: 关闭所有窗口后隐藏程序坞图标；需要通过菜单栏图标重新打开应用。
+  zh-HK: 關閉所有視窗後隱藏 Dock 圖示；需透過選單列圖示重新開啟應用程式。
+  zh-TW: 關閉所有視窗後隱藏 Dock 圖示；需透過選單列圖示重新開啟應用程式。
+"Requires the menu-bar icon to be enabled.":
+  ja: メニューバーアイコンを有効にする必要があります。
+  ru: "Требуется включённый значок в строке меню."
+  zh-CN: 需要启用菜单栏图标。
+  zh-HK: 需要啟用選單列圖示。
+  zh-TW: 需要啟用選單列圖示。
 "Language":
   ja: 言語
   ru: "Язык"

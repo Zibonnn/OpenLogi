@@ -56,7 +56,7 @@ pub enum InstanceError {
 /// surface to the user (and exit with a non-error status). Other variants
 /// indicate filesystem trouble.
 pub fn acquire() -> Result<InstanceGuard, InstanceError> {
-    let path = paths::config_dir()?.join("openlogi.lock");
+    let path = paths::config_dir()?.join(crate::platform::branding::instance_lock_file());
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| InstanceError::Open {
             path: path.clone(),

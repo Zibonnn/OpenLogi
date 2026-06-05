@@ -50,12 +50,14 @@ pub fn open_section(nav: SidebarNav, cx: &mut App) {
         let _ = handle.update(cx, |_, window, _| {
             window.activate_window();
             if let Some(section) = nav.settings_section() {
-                window.set_window_title(&format!("OpenLogi — {}", section_title(section)));
+                window.set_window_title(&crate::platform::branding::window_title(Some(
+                    &section_title(section),
+                )));
             }
         });
         cx.activate(true);
         #[cfg(target_os = "macos")]
-        crate::platform::tray::show_in_dock();
+        crate::platform::tray::reconcile_dock_visibility(cx);
         return;
     }
 

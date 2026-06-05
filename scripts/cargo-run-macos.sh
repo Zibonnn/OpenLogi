@@ -7,10 +7,11 @@
 # the desktop binary it's a transparent passthrough (`exec "$@"`).
 #
 # For `openlogi-gui` it launches the build from inside a throwaway
-# `OpenLogi.app` so macOS shows the real app name (the bold menu-bar title)
-# and the Dock icon during development. Both are read from the bundle's
-# `Info.plist` / `Resources` — a bare `target/debug/openlogi-gui` has neither,
-# so macOS falls back to the executable name and a generic icon.
+# `OpenLogi Dev.app` so macOS shows the real app name (the bold menu-bar
+# title), a distinct bundle id, and the Dock icon during development.
+# Both are read from the bundle's `Info.plist` / `Resources` — a bare
+# `target/debug/openlogi-gui` has neither, so macOS falls back to the
+# executable name and a generic icon.
 #
 # Set OPENLOGI_DEV_BUNDLE=0 to skip the wrapper and run the raw binary.
 set -euo pipefail
@@ -23,7 +24,7 @@ if [ "${bin##*/}" != "openlogi-gui" ] || [ "${OPENLOGI_DEV_BUNDLE:-1}" = "0" ]; 
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/target/dev/OpenLogi.app"
+APP="$ROOT/target/dev/OpenLogi Dev.app"
 MACOS="$APP/Contents/MacOS"
 RES="$APP/Contents/Resources"
 ICON_SRC="$ROOT/crates/openlogi-gui/icon/AppIcon.icns"
